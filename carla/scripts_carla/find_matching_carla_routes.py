@@ -2,23 +2,33 @@
 """
 Find CARLA map route segments whose curvature profile best matches a target road profile.
 
-Usage (default, same as before):
+Usage (default — loads each map in --maps sequentially):
     python scripts/find_matching_carla_routes.py \
-        --target-road-profile path/to/road_profile.csv \
+        --target-road-profile ./outputs_physicsnemo/ref_routes/road_profile_right.csv \
         --maps Town01 Town03 Town04 \
         --distance 200 \
         --ds 1.0 \
         --top-k 10 \
-        --output-dir output/route_search
+        --output-dir carla_maps
+
+Use already-loaded map (legacy behaviour with --use-loaded-map):
+    python scripts/find_matching_carla_routes.py \
+        --target-road-profile ./outputs_physicsnemo/ref_routes/road_profile_right.csv \
+        --maps Town10HD_Opt \
+        --distance 200 \
+        --ds 1.0 \
+        --top-k 10 \
+        --output-dir carla_maps \
+        --use-loaded-map
 
 Branch exploration (new):
     python scripts/find_matching_carla_routes.py \
-        --target-road-profile path/to/road_profile.csv \
+        --target-road-profile ./outputs_physicsnemo/ref_routes/road_profile_right.csv \
         --maps Town01 \
         --distance 220 \
         --ds 1.0 \
         --top-k 10 \
-        --output-dir output/route_search \
+        --output-dir carla_maps \
         --max-branches 1 \
         --max-branch-options 3
 
@@ -62,6 +72,10 @@ def parse_args():
                    help="How many next_wps candidates to explore at each expanded "
                         "branch point. 1 = next_wps[0] only (same as default). "
                         "e.g. 3 means next_wps[:3] (default: 1)")
+    p.add_argument("--use-loaded-map", action="store_true",
+                   help="Use the map already loaded in the CARLA server instead of "
+                        "calling load_world() for each entry in --maps. "
+                        "Equivalent to the legacy single-map behaviour.")
     return p.parse_args()
 
 
@@ -292,87 +306,115 @@ def main():
 
     # ---------- CARLA client ----------
     client = carla.Client(args.host, args.port)
-    client.set_timeout(20.0)
+    # Use a generous timeout: load_world() can take 30-60 s on large maps
+    client.set_timeout(120.0)
 
     all_candidates = []
 
-    world = client.get_world()
-    carla_map = world.get_map()
-    loaded_map_name = carla_map.name.split("/")[-1]
-    print(f"[INFO] Using already loaded map: {carla_map.name}")
+    # ------------------------------------------------------------------
+    # Build the list of (world, map_name) to search.
+    #
+    # --use-loaded-map : legacy mode — use the currently loaded world as-is.
+    # default          : call load_world() for each name in --maps.
+    # ------------------------------------------------------------------
+    if args.use_loaded_map:
+        world = client.get_world()
+        carla_map = world.get_map()
+        loaded_map_name = carla_map.name.split("/")[-1]
+        print(f"[INFO] --use-loaded-map: using already loaded map: {carla_map.name}")
+        if args.maps and loaded_map_name not in args.maps:
+            print(f"[WARN] Loaded map '{loaded_map_name}' is not in --maps={args.maps}")
+        worlds_to_search = [(world, loaded_map_name)]
+    else:
+        if not args.maps:
+            sys.exit("[ERROR] --maps is required when not using --use-loaded-map")
+        print(f"[INFO] Maps to load and search: {args.maps}")
+        worlds_to_search = []
+        for map_name in args.maps:
+            print(f"[INFO] Loading map: {map_name} ...")
+            world = client.load_world(map_name)
+            loaded_map_name = world.get_map().name.split("/")[-1]
+            print(f"[INFO] Loaded: {world.get_map().name}")
+            worlds_to_search.append((world, loaded_map_name))
 
-    if args.maps and loaded_map_name not in args.maps:
-        print(f"[WARN] Loaded map is {loaded_map_name}, but requested maps={args.maps}")
+    # ------------------------------------------------------------------
+    # Search each world
+    # ------------------------------------------------------------------
+    for world, loaded_map_name in worlds_to_search:
+        # Disable rendering for faster waypoint queries
+        settings = world.get_settings()
+        settings.no_rendering_mode = True
+        world.apply_settings(settings)
 
-    # Disable rendering for faster waypoint queries
-    settings = world.get_settings()
-    settings.no_rendering_mode = True
-    world.apply_settings(settings)
+        carla_map = world.get_map()
+        spawn_points = carla_map.get_spawn_points()
+        print(f"\n[INFO] {loaded_map_name}: {len(spawn_points)} spawn points")
 
-    carla_map = world.get_map()
-    spawn_points = carla_map.get_spawn_points()
-    print(f"[INFO] {len(spawn_points)} spawn points")
+        map_valid = 0
+        map_skip  = 0
 
-    valid_count = 0
-    skip_count  = 0
+        for sp_idx, sp in enumerate(spawn_points):
+            routes = build_route(
+                carla_map, sp, route_distance, args.ds,
+                max_branches=args.max_branches,
+                max_branch_options=args.max_branch_options,
+            )
 
-    for sp_idx, sp in enumerate(spawn_points):
-        routes = build_route(
-            carla_map, sp, route_distance, args.ds,
-            max_branches=args.max_branches,
-            max_branch_options=args.max_branch_options,
-        )
+            n_routes = len(routes)
+            if use_branching and n_routes > 1:
+                print(f"[INFO]   spawn={sp_idx:3d}: {n_routes} route variants generated")
 
-        n_routes = len(routes)
-        if use_branching and n_routes > 1:
-            print(f"[INFO]   spawn={sp_idx:3d}: {n_routes} route variants generated")
+            for branch_id, wps in enumerate(routes):
+                if len(wps) < 2:
+                    map_skip += 1
+                    continue
 
-        for branch_id, wps in enumerate(routes):
-            if len(wps) < 2:
-                skip_count += 1
-                continue
+                s_vals, xs, ys, zs, yaw_rads, curvs = compute_route_profile(wps)
 
-            s_vals, xs, ys, zs, yaw_rads, curvs = compute_route_profile(wps)
+                if s_vals[-1] < target_end_s:
+                    map_skip += 1
+                    continue
 
-            if s_vals[-1] < target_end_s:
-                skip_count += 1
-                continue
+                rmse_n = compute_rmse(target_s, target_curv, s_vals, curvs)
+                rmse_f = compute_rmse(target_s, target_curv, s_vals, -curvs)
+                flipped = rmse_f < rmse_n
+                score   = min(rmse_n, rmse_f)
 
-            rmse_n = compute_rmse(target_s, target_curv, s_vals, curvs)
-            rmse_f = compute_rmse(target_s, target_curv, s_vals, -curvs)
-            flipped = rmse_f < rmse_n
-            score   = min(rmse_n, rmse_f)
+                cand = {
+                    "map":            loaded_map_name,
+                    "spawn_idx":      sp_idx,
+                    "spawn_x":        float(sp.location.x),
+                    "spawn_y":        float(sp.location.y),
+                    "spawn_z":        float(sp.location.z),
+                    "rmse":           score,
+                    "rmse_normal":    rmse_n,
+                    "rmse_flipped":   rmse_f,
+                    "flipped":        flipped,
+                    "route_length_m": float(s_vals[-1]),
+                    "n_waypoints":    len(wps),
+                    "s_vals":         s_vals,
+                    "xs":             xs,
+                    "ys":             ys,
+                    "zs":             zs,
+                    "yaw_rads":       yaw_rads,
+                    "curvs":          curvs,
+                }
+                if use_branching:
+                    cand["branch_id"] = branch_id
 
-            cand = {
-                "map":            loaded_map_name,
-                "spawn_idx":      sp_idx,
-                "spawn_x":        float(sp.location.x),
-                "spawn_y":        float(sp.location.y),
-                "spawn_z":        float(sp.location.z),
-                "rmse":           score,
-                "rmse_normal":    rmse_n,
-                "rmse_flipped":   rmse_f,
-                "flipped":        flipped,
-                "route_length_m": float(s_vals[-1]),
-                "n_waypoints":    len(wps),
-                "s_vals":         s_vals,
-                "xs":             xs,
-                "ys":             ys,
-                "zs":             zs,
-                "yaw_rads":       yaw_rads,
-                "curvs":          curvs,
-            }
-            if use_branching:
-                cand["branch_id"] = branch_id
+                all_candidates.append(cand)
+                map_valid += 1
 
-            all_candidates.append(cand)
-            valid_count += 1
+        print(f"[INFO] {loaded_map_name}: {map_valid} valid route candidates, "
+              f"{map_skip} skipped")
+        if use_branching:
+            map_total = sum(1 for c in all_candidates if c["map"] == loaded_map_name)
+            print(f"[INFO] {loaded_map_name}: {map_total} total "
+                  f"(including branch variants)")
 
     total_candidates = len(all_candidates)
-    print(f"[INFO] {loaded_map_name}: {valid_count} valid route candidates, "
-          f"{skip_count} skipped")
-    if use_branching:
-        print(f"[INFO] Total candidates (including branch variants): {total_candidates}")
+    if len(worlds_to_search) > 1:
+        print(f"\n[INFO] All maps combined: {total_candidates} valid candidates")
 
     if not all_candidates:
         sys.exit("[ERROR] No valid route candidates found. "
