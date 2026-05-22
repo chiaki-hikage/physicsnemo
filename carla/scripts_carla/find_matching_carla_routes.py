@@ -2,7 +2,7 @@
 """
 Find CARLA map route segments whose curvature profile best matches a target road profile.
 
-Usage:
+Usage (default, same as before):
     python scripts/find_matching_carla_routes.py \
         --target-road-profile path/to/road_profile.csv \
         --maps Town01 Town03 Town04 \
@@ -10,6 +10,21 @@ Usage:
         --ds 1.0 \
         --top-k 10 \
         --output-dir output/route_search
+
+Branch exploration (new):
+    python scripts/find_matching_carla_routes.py \
+        --target-road-profile path/to/road_profile.csv \
+        --maps Town01 \
+        --distance 220 \
+        --ds 1.0 \
+        --top-k 10 \
+        --output-dir output/route_search \
+        --max-branches 1 \
+        --max-branch-options 3
+
+  --max-branches 1 --max-branch-options 3 means: at the first junction
+  encountered in each route, explore up to 3 directions; subsequent
+  junctions always take next_wps[0].
 """
 
 import argparse
@@ -23,7 +38,8 @@ import pandas as pd
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description=__doc__)
+    p = argparse.ArgumentParser(description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--target-road-profile", required=True,
                    help="Target road profile CSV with columns: s_m, curvature_1pm")
     p.add_argument("--maps", nargs="+", default=["Town01"],
@@ -38,8 +54,20 @@ def parse_args():
                    help="Output directory (default: output/route_search)")
     p.add_argument("--host", default="localhost", help="CARLA server host")
     p.add_argument("--port", type=int, default=2000, help="CARLA server port")
+    p.add_argument("--max-branches", type=int, default=0,
+                   help="Maximum number of junction branch points to expand with "
+                        "multiple next_wps options per route. "
+                        "0 = disabled, always take next_wps[0] (default: 0)")
+    p.add_argument("--max-branch-options", type=int, default=1,
+                   help="How many next_wps candidates to explore at each expanded "
+                        "branch point. 1 = next_wps[0] only (same as default). "
+                        "e.g. 3 means next_wps[:3] (default: 1)")
     return p.parse_args()
 
+
+# ---------------------------------------------------------------------------
+# Angle helpers
+# ---------------------------------------------------------------------------
 
 def _normalize_angle(angle):
     """Normalize a single angle to (-pi, pi]."""
@@ -51,11 +79,107 @@ def _normalize_angle_vec(angles):
     return (angles + np.pi) % (2 * np.pi) - np.pi
 
 
-def build_route(carla_map, spawn_transform, target_distance, ds):
+# ---------------------------------------------------------------------------
+# Route building
+# ---------------------------------------------------------------------------
+
+def _walk_route(wps, current_wp, total_s, target_distance, ds,
+                max_branches, max_branch_options, branches_used):
+    """Walk waypoints, forking at junctions when branch budget remains.
+
+    Walks the route in-place (extending `wps`) until a junction with multiple
+    next waypoints is reached and the branch budget allows expansion.
+    At that point, copies of the accumulated waypoints are made for each
+    candidate next waypoint, and the function recurses into each branch.
+
+    Parameters
+    ----------
+    wps : list[carla.Waypoint]
+        Waypoints accumulated so far; extended in-place until a fork.
+    current_wp : carla.Waypoint
+        The last waypoint in `wps`.
+    total_s : float
+        Arc length accumulated so far.
+    target_distance : float
+        Target route length to reach.
+    ds : float
+        Waypoint step size.
+    max_branches : int
+        Maximum number of junctions to expand (per-route budget).
+    max_branch_options : int
+        Maximum next_wps candidates to follow at each expanded junction.
+    branches_used : int
+        How many expansions have been used in this route so far.
+
+    Returns
+    -------
+    list[list[carla.Waypoint]]
+        One or more completed routes.
+    """
+    while total_s < target_distance:
+        next_wps = current_wp.next(ds)
+        if not next_wps:
+            break
+
+        n_next = len(next_wps)
+        should_branch = (n_next > 1
+                         and max_branch_options > 1
+                         and branches_used < max_branches)
+
+        if should_branch:
+            n_expand = min(n_next, max_branch_options)
+            loc = current_wp.transform.location
+            print(f"[BRANCH] ({loc.x:.1f}, {loc.y:.1f}): "
+                  f"{n_next} options → expanding {n_expand} "
+                  f"(branch {branches_used + 1}/{max_branches})")
+            results = []
+            for i in range(n_expand):
+                # Copy prefix so each branch has its own independent list
+                sub_wps = list(wps) + [next_wps[i]]
+                results.extend(_walk_route(
+                    sub_wps, next_wps[i], total_s + ds, target_distance, ds,
+                    max_branches, max_branch_options, branches_used + 1,
+                ))
+            return results
+        else:
+            # Default: take next_wps[0]; emit warning on junction
+            if n_next > 1:
+                loc = current_wp.transform.location
+                print(f"[WARN]   Branch at ({loc.x:.1f}, {loc.y:.1f}): "
+                      f"{n_next} options, taking [0]")
+            wps.append(next_wps[0])
+            current_wp = next_wps[0]
+            total_s += ds
+
+    return [wps]
+
+
+def build_route(carla_map, spawn_transform, target_distance, ds,
+                max_branches=0, max_branch_options=1):
     """Walk waypoints from spawn_transform for at least target_distance meters.
 
-    At junctions, always takes next_wps[0] and emits a warning.
-    Returns list of carla.Waypoint; empty list if the start has no drivable lane.
+    Parameters
+    ----------
+    carla_map : carla.Map
+    spawn_transform : carla.Transform
+    target_distance : float
+        Minimum arc length to walk.
+    ds : float
+        Waypoint step size in metres.
+    max_branches : int
+        Maximum number of junction branch points to expand per route.
+        0 (default) reproduces the original next_wps[0]-only behaviour.
+    max_branch_options : int
+        Candidates to explore per expanded junction.
+        1 (default) reproduces the original behaviour.
+
+    Returns
+    -------
+    list[list[carla.Waypoint]]
+        A list of routes. In default mode (max_branches=0 or
+        max_branch_options=1) this always contains exactly one route,
+        matching the original single-route return value.
+        Returns an empty list if the start position has no drivable lane.
     """
     wp = carla_map.get_waypoint(
         spawn_transform.location,
@@ -65,23 +189,21 @@ def build_route(carla_map, spawn_transform, target_distance, ds):
     if wp is None:
         return []
 
-    wps = [wp]
-    total_s = 0.0
+    return _walk_route(
+        wps=[wp],
+        current_wp=wp,
+        total_s=0.0,
+        target_distance=target_distance,
+        ds=ds,
+        max_branches=max_branches,
+        max_branch_options=max_branch_options,
+        branches_used=0,
+    )
 
-    while total_s < target_distance:
-        next_wps = wp.next(ds)
-        if not next_wps:
-            break
-        if len(next_wps) > 1:
-            print(f"[WARN]   Branch at ({wp.transform.location.x:.1f}, "
-                  f"{wp.transform.location.y:.1f}): "
-                  f"{len(next_wps)} options, taking [0]")
-        wp = next_wps[0]
-        wps.append(wp)
-        total_s += ds
 
-    return wps
-
+# ---------------------------------------------------------------------------
+# Profile computation and scoring
+# ---------------------------------------------------------------------------
 
 def compute_route_profile(wps):
     """Compute s_m, x_m, y_m, z_m, yaw_rad, curvature_1pm from a waypoint list.
@@ -126,8 +248,15 @@ def compute_rmse(target_s, target_curv, route_s, route_curv):
     return float(np.sqrt(np.mean((target_curv - route_curv_interp) ** 2)))
 
 
+# ---------------------------------------------------------------------------
+# main
+# ---------------------------------------------------------------------------
+
 def main():
     args = parse_args()
+
+    # Whether multi-branch exploration is active
+    use_branching = args.max_branches > 0 and args.max_branch_options > 1
 
     out_dir = Path(args.output_dir)
     routes_dir = out_dir / "routes"
@@ -150,6 +279,14 @@ def main():
           f"s=[0, {target_end_s:.1f}]m, "
           f"curvature=[{target_curv.min():.4f}, {target_curv.max():.4f}] 1/m")
 
+    if use_branching:
+        print(f"[INFO] Branch exploration: max_branches={args.max_branches}, "
+              f"max_branch_options={args.max_branch_options}")
+    else:
+        print(f"[INFO] Branch exploration: disabled "
+              f"(max_branches={args.max_branches}, "
+              f"max_branch_options={args.max_branch_options})")
+
     # Route must cover the full target length; add a small margin
     route_distance = max(args.distance, target_end_s) + args.ds * 2
 
@@ -164,7 +301,6 @@ def main():
     loaded_map_name = carla_map.name.split("/")[-1]
     print(f"[INFO] Using already loaded map: {carla_map.name}")
 
-    # args.maps が指定されていて、期待mapと違う場合は警告だけ出す
     if args.maps and loaded_map_name not in args.maps:
         print(f"[WARN] Loaded map is {loaded_map_name}, but requested maps={args.maps}")
 
@@ -178,48 +314,65 @@ def main():
     print(f"[INFO] {len(spawn_points)} spawn points")
 
     valid_count = 0
-    skip_count = 0
+    skip_count  = 0
 
     for sp_idx, sp in enumerate(spawn_points):
-        wps = build_route(carla_map, sp, route_distance, args.ds)
+        routes = build_route(
+            carla_map, sp, route_distance, args.ds,
+            max_branches=args.max_branches,
+            max_branch_options=args.max_branch_options,
+        )
 
-        if len(wps) < 2:
-            skip_count += 1
-            continue
+        n_routes = len(routes)
+        if use_branching and n_routes > 1:
+            print(f"[INFO]   spawn={sp_idx:3d}: {n_routes} route variants generated")
 
-        s_vals, xs, ys, zs, yaw_rads, curvs = compute_route_profile(wps)
+        for branch_id, wps in enumerate(routes):
+            if len(wps) < 2:
+                skip_count += 1
+                continue
 
-        if s_vals[-1] < target_end_s:
-            skip_count += 1
-            continue
+            s_vals, xs, ys, zs, yaw_rads, curvs = compute_route_profile(wps)
 
-        rmse_n = compute_rmse(target_s, target_curv, s_vals, curvs)
-        rmse_f = compute_rmse(target_s, target_curv, s_vals, -curvs)
-        flipped = rmse_f < rmse_n
-        score = min(rmse_n, rmse_f)
+            if s_vals[-1] < target_end_s:
+                skip_count += 1
+                continue
 
-        all_candidates.append({
-            "map": loaded_map_name,
-            "spawn_idx": sp_idx,
-            "spawn_x": float(sp.location.x),
-            "spawn_y": float(sp.location.y),
-            "spawn_z": float(sp.location.z),
-            "rmse": score,
-            "rmse_normal": rmse_n,
-            "rmse_flipped": rmse_f,
-            "flipped": flipped,
-            "route_length_m": float(s_vals[-1]),
-            "n_waypoints": len(wps),
-            "s_vals": s_vals,
-            "xs": xs,
-            "ys": ys,
-            "zs": zs,
-            "yaw_rads": yaw_rads,
-            "curvs": curvs,
-        })
-        valid_count += 1
+            rmse_n = compute_rmse(target_s, target_curv, s_vals, curvs)
+            rmse_f = compute_rmse(target_s, target_curv, s_vals, -curvs)
+            flipped = rmse_f < rmse_n
+            score   = min(rmse_n, rmse_f)
 
-    print(f"[INFO] {loaded_map_name}: {valid_count} valid routes, {skip_count} skipped")
+            cand = {
+                "map":            loaded_map_name,
+                "spawn_idx":      sp_idx,
+                "spawn_x":        float(sp.location.x),
+                "spawn_y":        float(sp.location.y),
+                "spawn_z":        float(sp.location.z),
+                "rmse":           score,
+                "rmse_normal":    rmse_n,
+                "rmse_flipped":   rmse_f,
+                "flipped":        flipped,
+                "route_length_m": float(s_vals[-1]),
+                "n_waypoints":    len(wps),
+                "s_vals":         s_vals,
+                "xs":             xs,
+                "ys":             ys,
+                "zs":             zs,
+                "yaw_rads":       yaw_rads,
+                "curvs":          curvs,
+            }
+            if use_branching:
+                cand["branch_id"] = branch_id
+
+            all_candidates.append(cand)
+            valid_count += 1
+
+    total_candidates = len(all_candidates)
+    print(f"[INFO] {loaded_map_name}: {valid_count} valid route candidates, "
+          f"{skip_count} skipped")
+    if use_branching:
+        print(f"[INFO] Total candidates (including branch variants): {total_candidates}")
 
     if not all_candidates:
         sys.exit("[ERROR] No valid route candidates found. "
@@ -229,46 +382,65 @@ def main():
     all_candidates.sort(key=lambda c: c["rmse"])
     top_k = all_candidates[: args.top_k]
 
-    print(f"\n[INFO] Top {len(top_k)} candidates (of {len(all_candidates)} total):")
+    print(f"\n[INFO] Top {len(top_k)} candidates (of {total_candidates} total):")
 
     summary_rows = []
     for rank, cand in enumerate(top_k):
         direction = "flipped" if cand["flipped"] else "normal"
-        route_csv_name = f"{cand['map']}_sp{cand['spawn_idx']:03d}_{direction}.csv"
+
+        # File naming: include branch_id only in branching mode
+        if use_branching:
+            branch_id = cand["branch_id"]
+            route_csv_name = (f"{cand['map']}_sp{cand['spawn_idx']:03d}"
+                              f"_b{branch_id:02d}_{direction}.csv")
+        else:
+            route_csv_name = f"{cand['map']}_sp{cand['spawn_idx']:03d}_{direction}.csv"
+
         route_csv_path = routes_dir / route_csv_name
 
         # Apply curvature sign flip for the saved CSV
         saved_curvs = -cand["curvs"] if cand["flipped"] else cand["curvs"]
 
         route_df = pd.DataFrame({
-            "s_m": cand["s_vals"],
-            "x_m": cand["xs"],
-            "y_m": cand["ys"],
-            "z_m": cand["zs"],
-            "yaw_rad": cand["yaw_rads"],
+            "s_m":           cand["s_vals"],
+            "x_m":           cand["xs"],
+            "y_m":           cand["ys"],
+            "z_m":           cand["zs"],
+            "yaw_rad":       cand["yaw_rads"],
             "curvature_1pm": saved_curvs,
         })
         route_df.to_csv(route_csv_path, index=False)
 
-        print(f"  [{rank + 1:2d}] {cand['map']}  spawn={cand['spawn_idx']:3d}  "
-              f"rmse={cand['rmse']:.6f}  {direction}  "
-              f"len={cand['route_length_m']:.1f}m  wps={cand['n_waypoints']}")
+        # Console log
+        if use_branching:
+            print(f"  [{rank + 1:2d}] {cand['map']}  spawn={cand['spawn_idx']:3d}  "
+                  f"branch={cand['branch_id']:2d}  rmse={cand['rmse']:.6f}  {direction}  "
+                  f"len={cand['route_length_m']:.1f}m  wps={cand['n_waypoints']}")
+        else:
+            print(f"  [{rank + 1:2d}] {cand['map']}  spawn={cand['spawn_idx']:3d}  "
+                  f"rmse={cand['rmse']:.6f}  {direction}  "
+                  f"len={cand['route_length_m']:.1f}m  wps={cand['n_waypoints']}")
 
-        summary_rows.append({
-            "rank": rank + 1,
-            "map": cand["map"],
-            "spawn_idx": cand["spawn_idx"],
-            "spawn_x": cand["spawn_x"],
-            "spawn_y": cand["spawn_y"],
-            "spawn_z": cand["spawn_z"],
-            "rmse": cand["rmse"],
-            "rmse_normal": cand["rmse_normal"],
-            "rmse_flipped": cand["rmse_flipped"],
-            "flipped": cand["flipped"],
+        # Summary row — existing columns always present; branch_id added in branch mode
+        row = {
+            "rank":           rank + 1,
+            "map":            cand["map"],
+            "spawn_idx":      cand["spawn_idx"],
+            "spawn_x":        cand["spawn_x"],
+            "spawn_y":        cand["spawn_y"],
+            "spawn_z":        cand["spawn_z"],
+            "rmse":           cand["rmse"],
+            "rmse_normal":    cand["rmse_normal"],
+            "rmse_flipped":   cand["rmse_flipped"],
+            "flipped":        cand["flipped"],
             "route_length_m": cand["route_length_m"],
-            "n_waypoints": cand["n_waypoints"],
-            "route_csv": str(route_csv_path.relative_to(out_dir)),
-        })
+            "n_waypoints":    cand["n_waypoints"],
+            "route_csv":      str(route_csv_path.relative_to(out_dir)),
+        }
+        if use_branching:
+            row["branch_id"] = cand["branch_id"]
+
+        summary_rows.append(row)
 
     summary_df = pd.DataFrame(summary_rows)
     summary_path = out_dir / "route_candidates.csv"

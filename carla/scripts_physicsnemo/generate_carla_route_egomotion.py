@@ -16,10 +16,10 @@ Output directory: <output-dir>/carla_route/<route_stem>/<scenario>/
 
 Usage:
   python scripts_physicsnemo/generate_carla_route_egomotion.py \\
-      --model-path path/to/vehicle_model.pt \\
+      --model-path output_training/vehicle_model.pt \\
       --route-csv carla_maps/routes/Town10HD_Opt_sp147_normal.csv \\
-      --scenario misjudged_low_mu \\
-      [--mu-assumed 0.9] [--mu-actual 0.4] \\
+      --scenario safe_low_mu \\
+      [--mu-assumed 0.9] [--mu-actual 0.3] \\
       [--speed-limit-kph 40] [--lane-width-m 3.5] \\
       [--n-trials 250] [--dt 0.1] [--t-max 60] \\
       [--output-dir outputs_physicsnemo]
@@ -59,8 +59,8 @@ from physicsnemo_can_vehicle_training import (
 # Default scenario mu values
 SCENARIO_MU = {
     "normal_dry":       {"mu_assumed": 0.9, "mu_actual": 0.9},
-    "safe_low_mu":      {"mu_assumed": 0.4, "mu_actual": 0.4},
-    "misjudged_low_mu": {"mu_assumed": 0.9, "mu_actual": 0.4},
+    "safe_low_mu":      {"mu_assumed": 0.3, "mu_actual": 0.3},
+    "misjudged_low_mu": {"mu_assumed": 0.9, "mu_actual": 0.3},
 }
 
 

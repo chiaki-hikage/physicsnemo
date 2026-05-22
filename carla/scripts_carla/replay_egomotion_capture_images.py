@@ -8,8 +8,8 @@ and metadata, not the vehicle trajectory.
 
 Usage (absolute-coords, CARLA-route egomotion, short test):
     python scripts/replay_egomotion_capture_images.py \
-        --csv outputs_physicsnemo/carla_route/Town10HD_Opt_sp147_normal/misjudged_low_mu/egomotion.csv \
-        --sample-id town10_sp147_misjudged_low_mu_4cam_10sec_rain \
+        --csv outputs_physicsnemo/carla_route/Town10HD_Opt_sp147_normal/egomotion.csv \
+        --sample-id town10_sp147_4cam_10sec_rain \
         --output-dir output \
         --map Town10HD_Opt \
         --strict-map-check \
@@ -18,7 +18,7 @@ Usage (absolute-coords, CARLA-route egomotion, short test):
         --image-width 800 \
         --image-height 450 \
         --weather hard_rain_fog \
-        --tire-friction 0.5
+        --tire-friction 0.6
 
 Usage (relative mode, legacy PhysicsNeMo synthetic egomotion):
     python scripts/replay_egomotion_capture_images.py \

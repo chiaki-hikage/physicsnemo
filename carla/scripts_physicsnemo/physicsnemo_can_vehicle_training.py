@@ -2951,12 +2951,12 @@ def run_residual_output_diagnostics(
 # =========================================================
 if __name__ == "__main__":
     # Example:
-    raw_df = pd.read_csv("./data/auto_iowa.csv")
+    raw_df = pd.read_csv("./input_can/auto_iowa.csv")
     df = preprocess_can_dataframe(raw_df)
     priors = VehicleSpecPriors(mass_kg_init=2050.0, wheelbase_m=2.3, front_weight_fraction=0.55)
     cfg = TrainConfig(device="cuda" if torch.cuda.is_available() else "cpu")
     mass_fit = {"mass_kg": 2050.0}
-    outdir = Path("./out_physics_vehicle")
+    outdir = Path("./outputs_training")
 
     model = train_vehicle_model(
         df=df,
