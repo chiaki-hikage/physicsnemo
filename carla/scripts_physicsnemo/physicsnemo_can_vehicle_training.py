@@ -15,6 +15,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 
+from physicsnemo.models.mlp.fully_connected import FullyConnected
 
 # =========================================================
 # 1. Expected raw columns
@@ -630,21 +631,6 @@ class CenteredDataset(Dataset):
 # =========================================================
 # 7. Model
 # =========================================================
-class ResidualMLP_org(nn.Module):
-    def __init__(self, in_dim: int, hidden: int, out_dim: int):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(in_dim, hidden),
-            nn.Tanh(),
-            nn.Linear(hidden, hidden),
-            nn.Tanh(),
-            nn.Linear(hidden, out_dim),
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x)
-
-
 class ResidualMLP(nn.Module):
     def __init__(self, in_dim: int, hidden: int, out_dim: int):
         super().__init__()
@@ -663,6 +649,24 @@ class ResidualMLP(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x)
+
+
+class PhysicsNeMoResidualMLP(nn.Module):
+    def __init__(self, in_dim: int, hidden: int, out_dim: int, num_layers: int = 2):
+        super().__init__()
+        self.net = FullyConnected(
+            in_features=in_dim,
+            out_features=out_dim,
+            layer_size=hidden,
+            num_layers=num_layers,
+            activation_fn="silu",
+        )
+        self.output_scale = nn.Parameter(torch.tensor(0.0))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.output_scale * self.net(x)
+    
+
 
 class PhysicsInformedVehicleModel(nn.Module):
     """
@@ -712,7 +716,7 @@ class PhysicsInformedVehicleModel(nn.Module):
         ))
 
         # Small residual corrections
-        self.residual = ResidualMLP(in_dim=input_dim + 6, hidden=cfg.hidden_dim, out_dim=3)
+        self.residual = PhysicsNeMoResidualMLP(in_dim=input_dim + 6, hidden=cfg.hidden_dim, out_dim=3)
 
         self.raw_delta_gain = nn.Parameter(torch.tensor(0.0, dtype=torch.float32))
 
