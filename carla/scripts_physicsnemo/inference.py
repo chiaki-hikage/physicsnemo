@@ -528,6 +528,7 @@ class PolicyParams:
     ky: float
     kpsi: float
     kv: float
+    speed_tolerance_mps: float = 0.5
 
 
 # ============================================================
@@ -654,8 +655,12 @@ class RoadFollowingPolicy:
         # フェーズ別の加速度符号制約
         # ==================================================
         if phase == "approach":
-            # 進入中は基本的に速度維持。強い加減速はしない。
-            ax_raw = float(np.clip(ax_raw, -0.3, 0.3))
+            if vx > v_tgt + self.params.speed_tolerance_mps:
+                # 速度超過時は ax_min まで減速を許可
+                ax_raw = float(np.clip(ax_raw, self.constraints.ax_min, 0.0))
+            else:
+                # 安全速度付近では緩やかな維持
+                ax_raw = float(np.clip(ax_raw, -0.3, 0.3))
 
         elif phase == "braking":
             # カーブ前はブレーキのみ
@@ -677,7 +682,10 @@ class RoadFollowingPolicy:
 
         # jerk制限後に符号が少し戻る可能性があるため、最後に再度フェーズ制約
         if phase == "approach":
-            ax_cmd = float(np.clip(ax_cmd, -0.3, 0.3))
+            if vx > v_tgt + self.params.speed_tolerance_mps:
+                ax_cmd = float(np.clip(ax_cmd, self.constraints.ax_min, 0.0))
+            else:
+                ax_cmd = float(np.clip(ax_cmd, -0.3, 0.3))
         elif phase == "braking":
             ax_cmd = min(ax_cmd, 0.0)
         elif phase == "turning":

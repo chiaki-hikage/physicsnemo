@@ -16,14 +16,13 @@ Output directory: <output-dir>/carla_route/<route_stem>/<scenario>/
 
 Usage:
   python scripts_physicsnemo/generate_carla_route_egomotion.py \\
-      --model-path output_training/vehicle_model.pt \\
+      --model-path outputs_training/vehicle_model.pt \\
       --route-csv carla_maps/routes/Town10HD_Opt_sp147_normal.csv \\
       --scenario safe_low_mu \\
       [--mu-assumed 0.9] [--mu-actual 0.3] \\
       [--speed-limit-kph 40] [--lane-width-m 3.5] \\
       [--n-trials 250] [--dt 0.1] [--t-max 60] \\
-      [--output-dir outputs_physicsnemo]
-"""
+      [--output-dir outputs_physicsnemo]"""
 
 import argparse
 import json
@@ -59,8 +58,8 @@ from physicsnemo_can_vehicle_training import (
 # Default scenario mu values
 SCENARIO_MU = {
     "normal_dry":       {"mu_assumed": 0.9, "mu_actual": 0.9},
-    "safe_low_mu":      {"mu_assumed": 0.3, "mu_actual": 0.3},
-    "misjudged_low_mu": {"mu_assumed": 0.9, "mu_actual": 0.3},
+    "safe_low_mu":      {"mu_assumed": 0.2, "mu_actual": 0.2},
+    "misjudged_low_mu": {"mu_assumed": 0.9, "mu_actual": 0.2},
 }
 
 
@@ -110,6 +109,8 @@ def parse_args():
                    help="Torch device (default: cpu)")
     p.add_argument("--output-dir", default="outputs_physicsnemo",
                    help="Base output directory (default: outputs_physicsnemo)")
+    p.add_argument("--initial-speed-kph", type=float, default=None,
+                   help="Initial vehicle speed [km/h] (default: road speed limit or v_straight)")
     return p.parse_args()
 
 
@@ -152,6 +153,13 @@ def main():
     print(f"[INFO] Scenario     : {args.scenario}")
     print(f"[INFO] mu_assumed   : {mu_assumed}")
     print(f"[INFO] mu_actual    : {mu_actual}")
+
+    # --- initial speed ---
+    initial_speed_mps = args.initial_speed_kph / 3.6 if args.initial_speed_kph is not None else None
+    if initial_speed_mps is not None:
+        print(f"[INFO] initial_speed: {args.initial_speed_kph:.1f} km/h = {initial_speed_mps:.3f} m/s")
+    else:
+        print(f"[INFO] initial_speed: auto (road speed limit or v_straight)")
 
     # --- output directory ---
     route_stem = Path(args.route_csv).stem
@@ -224,6 +232,7 @@ def main():
         control_mu=mu_assumed,
         dt=args.dt,
         t_max=args.t_max,
+        initial_speed_mps=initial_speed_mps,
     )
     metrics = evaluate_result(result, road, constraints)
 
@@ -284,6 +293,8 @@ def main():
         "goal_reached": bool(result["goal_reached"]),
         "final_time_s": float(result["final_time"]),
         "n_timesteps": int(len(result["t"])),
+        "initial_speed_kph": args.initial_speed_kph,
+        "initial_speed_mps": initial_speed_mps,
         "model_path": str(args.model_path),
         "device": args.device,
         "wheelbase_m": args.wheelbase_m,
