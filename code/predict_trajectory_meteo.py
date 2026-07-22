@@ -196,6 +196,9 @@ class _InferenceConfig:
         # 豪雨時の速度上限（ユーザー指定: 10km/h）
         self.V_MAX_RAIN_KMH = 10.0
         self.V_MAX_RAIN_MPS = self.V_MAX_RAIN_KMH / 3.6
+        # 豪雨時の減速ランプの最大減速度（急減速を避けるための上限、m/s^2）
+        # 2.0 m/s^2 は快適なブレーキ程度の減速度（デフォルト値、要調整）
+        self.HEAVY_RAIN_MAX_DECEL_MPS2 = 2.0
         self.HEAVY_RAIN_COT_MESSAGE = HEAVY_RAIN_COT_MESSAGE
 
         self.DTYPE = torch.bfloat16
@@ -1210,14 +1213,16 @@ def _load_models(
 
 
 # =============================================================================
-# !!! 追加: 豪雨時の速度クランプ（後処理）
+# !!! 追加: 豪雨時の速度クランプ（後処理、減速ランプ方式）
 #
 # action_to_traj() が出力した予測軌跡(xyz)に対し、
-# 各ステップの変位ベクトルを一律スケーリングして最大速度を
-# max_speed_mps 以下に抑える。
+# t0時点の実速度から max_decel_mps2 を上限とした直線的な減速ランプで
+# max_speed_mps まで緩やかに減速させる（瞬時に一律スケールしない）。
 #
-# 進行方向（=各ステップ変位の向き）は変えず、大きさだけを縮めるため、
-# 経路の形状・操舵意図は保ったまま速度のみ低下させられる。
+# - 元の予測速度がランプより既に遅い区間は変更しない
+#   （無理に減速させたり加速させたりしない）
+# - 進行方向（=各ステップ変位の向き）は変えず、大きさ（速度）のみ調整するため、
+#   経路の形状・操舵意図は保たれる
 # =============================================================================
 
 def _clamp_trajectory_speed(
@@ -1225,19 +1230,38 @@ def _clamp_trajectory_speed(
     ego_history_xyz: torch.Tensor,
     dt: float,
     max_speed_mps: float,
+    max_decel_mps2: float,
 ) -> torch.Tensor:
-    """予測軌跡の速度を max_speed_mps 以下にクランプする。
+    """予測軌跡の速度を、緩やかな減速ランプで max_speed_mps まで落とす。
+
+    t0の実速度 v_start を出発点とし、
+        v_ramp[i] = max(max_speed_mps, v_start - max_decel_mps2 * (i+1)*dt)
+    という減速ランプを構築し、各ステップの速度を
+        v_capped[i] = min(v_orig[i], v_ramp[i])
+    にクランプする（急減速を避け、目標速度に向けて滑らかに収束する）。
 
     Args:
         pred_future_xyz: (1, 1, T_fut, 3) 予測将来位置（t0基準ローカル座標系）
         ego_history_xyz: (1, 1, T_hist, 3) 自車過去位置（t0基準ローカル座標系）
         dt: waypoint間隔（秒）
-        max_speed_mps: 許容する最大速度（m/s）
+        max_speed_mps: 減速ランプの下限（最終的に収束する目標速度、m/s）
+        max_decel_mps2: 減速ランプの最大減速度（m/s^2）
 
     Returns:
         (1, 1, T_fut, 3) 速度をクランプした予測将来位置
     """
+    T_fut = pred_future_xyz.shape[2]
+    device = pred_future_xyz.device
+    dtype = pred_future_xyz.dtype
+
     last_hist_xyz = ego_history_xyz[:, :, -1:, :]  # (1, 1, 1, 3) - t0位置
+    prev_hist_xyz = ego_history_xyz[:, :, -2:-1, :]  # (1, 1, 1, 3) - t0-dt位置
+
+    # t0時点の実速度（減速ランプの出発点）
+    v_start = torch.linalg.norm(
+        (last_hist_xyz - prev_hist_xyz)[..., :2],
+        dim=-1,
+    ) / dt  # (1, 1, 1)
 
     prev = torch.cat(
         [last_hist_xyz, pred_future_xyz[:, :, :-1, :]],
@@ -1246,14 +1270,37 @@ def _clamp_trajectory_speed(
 
     diffs = pred_future_xyz - prev  # (1, 1, T_fut, 3)
 
-    step_speed = torch.linalg.norm(diffs[..., :2], dim=-1) / dt  # (1, 1, T_fut)
-    max_speed = step_speed.max()
+    v_orig = torch.linalg.norm(diffs[..., :2], dim=-1) / dt  # (1, 1, T_fut)
 
-    if max_speed <= max_speed_mps:
+    if v_orig.max() <= max_speed_mps and v_start.max() <= max_speed_mps:
         return pred_future_xyz
 
-    alpha = max_speed_mps / max_speed
-    scaled_diffs = diffs * alpha
+    # 減速ランプ: t0からmax_decel_mps2で減速し、max_speed_mpsで下げ止まる
+    t_steps = (
+        torch.arange(
+            1,
+            T_fut + 1,
+            device=device,
+            dtype=dtype,
+        )
+        * dt
+    ).view(1, 1, T_fut)
+
+    v_ramp = torch.clamp(
+        v_start - max_decel_mps2 * t_steps,
+        min=max_speed_mps,
+    )  # (1, 1, T_fut)
+
+    v_capped = torch.minimum(v_orig, v_ramp)  # (1, 1, T_fut)
+
+    # 速度のみスケール（進行方向は保持）
+    scale = torch.where(
+        v_orig > 1e-6,
+        v_capped / v_orig,
+        torch.ones_like(v_orig),
+    ).unsqueeze(-1)  # (1, 1, T_fut, 1)
+
+    scaled_diffs = diffs * scale
 
     return last_hist_xyz + torch.cumsum(scaled_diffs, dim=2)
 
@@ -1524,6 +1571,7 @@ def predict_trajectory(
             hist_xyz.unsqueeze(1),
             dt=cfg.DT,
             max_speed_mps=cfg.V_MAX_RAIN_MPS,
+            max_decel_mps2=cfg.HEAVY_RAIN_MAX_DECEL_MPS2,
         ).squeeze(1)
 
     # (1, 64, 3) → (1, 1, 64, 3),
