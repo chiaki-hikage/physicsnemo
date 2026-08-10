@@ -1,0 +1,1008 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>自動運転データセット CAN情報 調査まとめ</title>
+<style>
+  body { font-family: -apple-system, "Hiragino Kaku Gothic ProN", "Yu Gothic", sans-serif; line-height: 1.75; max-width: 1100px; margin: 24px auto; padding: 0 16px; color: #172b4d; }
+  h1 { border-bottom: 2px solid #dfe1e6; padding-bottom: 8px; }
+  h2 { margin-top: 36px; border-bottom: 1px solid #dfe1e6; padding-bottom: 4px; }
+  h3 { margin-top: 24px; }
+  table { border-collapse: collapse; width: 100%; margin: 14px 0; }
+  th, td { border: 1px solid #dfe1e6; padding: 7px 9px; text-align: left; vertical-align: top; font-size: 13px; line-height: 1.5; }
+  th { background-color: #f4f5f7; font-weight: 600; }
+  .rowhead { background-color: #f4f5f7; font-weight: 600; white-space: nowrap; }
+  .ok { background-color: #e3fcef; }
+  .warn { background-color: #fffae6; }
+  .ng { background-color: #ffebe6; }
+  .note { border-left: 3px solid #4c9aff; background-color: #deebff; margin: 14px 0; padding: 10px 14px; }
+  .caution { border-left: 3px solid #ff8b00; background-color: #fffae6; margin: 14px 0; padding: 10px 14px; }
+  .tbd { color: #6b778c; font-style: italic; }
+  .small { font-size: 13px; color: #6b778c; }
+</style>
+</head>
+<body>
+
+<h1>自動運転データセット CAN情報 調査まとめ</h1>
+
+<p class="small">最終更新: 2026-08-10 / ライセンス情報の確認日: 2026-08-10</p>
+
+<!-- ============================================================ -->
+<h2>0. 目的・スコープ・扱わない範囲</h2>
+
+<p>物理的な車両運動方程式ベースで生成しているVLA（Vision-Language-Action）モデル学習データを、実車挙動に合わせて同化（システム同定）するために、CAN情報を含む公開走行データセットを比較する。</p>
+
+<p>本ページの構成方針は以下の通り。</p>
+
+<ul>
+  <li><strong>第2章・第3章・第4章は評価目的から中立</strong>に、データセットの属性・構造・保有信号を網羅的に記載する。後から別の観点で評価する際にも、この3章がそのまま素材カタログとして使える形にしている。</li>
+  <li><strong>第5章・第6章が今回の評価</strong>。評価観点が増えた場合は第7章、第8章として同じ形式で追記する。</li>
+  <li>公開データセット5件に加えて、<strong>従来利用していたOBD-IIログを比較のベースラインとして同列に扱う</strong>。移行によって何が増え、何が失われるかを差分で把握するため。</li>
+</ul>
+
+<h3>0.1 扱わない範囲・前提</h3>
+
+<div class="caution">
+<p><strong>タイヤ温度の実測値は、いずれのデータセットにも存在しない。</strong>量産車のCANに出るタイヤ関連の温度はTPMSの空気温度程度であり、それもトレッド温度とは別物で、公開データセットで復号済みのものはない。したがってタイヤ熱は計測対象ではなくモデル推定対象であり、データセットに求めるのは熱の入力側（スリップと荷重）となる。</p>
+</div>
+
+<div class="caution">
+<p><strong>ブレーキフェード領域は、公開データセットではカバーできない。</strong>本ページで扱う全データセットは公道の通常走行であり、長い下り坂での連続制動や繰り返し急制動を含まない。現代車のブレーキは公道の通常使用でフェードしないよう設計されているため、校正対象の現象そのものがデータに含まれていない可能性が高い。詳細は第6章。</p>
+</div>
+
+<h3>0.2 記号の凡例</h3>
+
+<table>
+  <tbody>
+    <tr><td class="rowhead">◎</td><td>目的に対して十分</td></tr>
+    <tr><td class="rowhead">○</td><td>利用可能。ただし前処理や補正が必要</td></tr>
+    <tr><td class="rowhead">△</td><td>制約が大きく、限定的にしか使えない</td></tr>
+    <tr><td class="rowhead">✗</td><td>不可、または該当データなし</td></tr>
+    <tr><td class="rowhead">（要確認）</td><td>一次情報での裏取りが未了。第8章の未確認事項リストと対応</td></tr>
+  </tbody>
+</table>
+
+<!-- ============================================================ -->
+<h2>1. 結論サマリ</h2>
+
+<table>
+  <thead>
+    <tr><th style="width:22%">用途</th><th style="width:20%">推奨</th><th>理由</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>スリップ率の同定（低速市街地）</td>
+      <td>nuScenes / A2D2</td>
+      <td>4輪速と駆動トルクまたは車輪パルスが揃う。ただし乾燥路のためスリップ事象そのものが乏しい</td>
+    </tr>
+    <tr>
+      <td>低μ路・横力飽和の観測</td>
+      <td>ZOD / NVIDIA PhysicalAI-AV</td>
+      <td>ZODは北欧の冬季、NVIDIAは雪氷路面を含む25カ国。低μ事象を含む唯一の候補群</td>
+    </tr>
+    <tr>
+      <td>ブレーキ熱モデルの校正</td>
+      <td class="ng">公開データセットでは不可</td>
+      <td>20秒クリップ構造で熱履歴が切れる、フェード事象が存在しない、EV/PHEVで回生が混入する。自社取得を推奨（第6章）</td>
+    </tr>
+    <tr>
+      <td>車両ダイナミクス全般の同定</td>
+      <td>comma2k19</td>
+      <td>生CANフレーム、連続33時間、MITライセンス、非ハイブリッド車で回生の混入なし</td>
+    </tr>
+    <tr>
+      <td>商用前提のVLA学習</td>
+      <td>NVIDIA PhysicalAI-AV / ZOD / comma2k19</td>
+      <td>nuScenesは非商用ライセンスのため使用不可。NVIDIAは商用可だが機密保持義務と12ヶ月失効に注意（第7章）</td>
+    </tr>
+    <tr>
+      <td>従来利用していたOBD-IIログの位置づけ</td>
+      <td class="warn">計測系の拡張ベースとして最有力</td>
+      <td>ブレーキ液圧・舵角・4輪速がなく、実効レートも約1Hzのため単体では同定に使えない。一方で<strong>連続性・勾配（Pitch / Altitude）・車両質量の既知性・外気温という、公開データセットが軒並み欠いている条件を単独で満たしている</strong>。同じ計測系に不足チャンネルを追加してレートを上げる方が、公開データセットを探すより目的に近い（第6.5節）</td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- ============================================================ -->
+<h2>2. データセット基本情報</h2>
+
+<p>評価目的に依存しない属性の一覧。1データセット＝1列で記載する。</p>
+
+<table>
+  <thead>
+    <tr>
+      <th style="width:13%">項目</th>
+      <th>nuScenes</th>
+      <th>comma2k19</th>
+      <th>ZOD</th>
+      <th>A2D2</th>
+      <th>NVIDIA PhysicalAI-AV</th>
+      <th>OBD-IIログ（参考・従来利用）</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td class="rowhead">提供元</td>
+      <td>Motional（旧 nuTonomy）</td>
+      <td>comma.ai</td>
+      <td>Zenseact</td>
+      <td>Audi (AEV)</td>
+      <td>NVIDIA</td>
+      <td>APMonitor（BYU教材）<br>従来利用していたデータ</td>
+    </tr>
+    <tr>
+      <td class="rowhead">公開年 / 更新</td>
+      <td>2019-03 本体<br>2020-01 CAN拡張</td>
+      <td>2018-12</td>
+      <td>2023（ICCV 2023）<br>レーダ追加あり</td>
+      <td>2020-04</td>
+      <td>2025-10 初版<br>2026-03 v26.03</td>
+      <td>2021年収録<br>ページ最終更新 2022-05</td>
+    </tr>
+    <tr>
+      <td class="rowhead">収集地域</td>
+      <td>米ボストン（Seaport）<br>シンガポール（One North / Queenstown / Holland Village）</td>
+      <td>米カリフォルニア I-280<br>San Jose–San Francisco 間の20km区間</td>
+      <td>欧州14カ国</td>
+      <td>独 Gaimersheim / Ingolstadt / München</td>
+      <td>25カ国・2500都市以上<br>（米155k / 独44k / 仏10k クリップ 等）</td>
+      <td>米アイオワ州<br>Des Moines → Pella</td>
+    </tr>
+    <tr>
+      <td class="rowhead">収集期間</td>
+      <td class="tbd">（要確認）</td>
+      <td>2018年</td>
+      <td>2年間</td>
+      <td class="tbd">3回のテストドライブ</td>
+      <td class="tbd">（要確認）</td>
+      <td>単一トリップ</td>
+    </tr>
+    <tr>
+      <td class="rowhead">天候・時間帯</td>
+      <td>晴天・雨、昼・夜</td>
+      <td>日中中心・良天候<span class="tbd">（要確認）</span></td>
+      <td>多様。<strong>北欧の冬季を含む</strong>、昼・夜</td>
+      <td>主に良天候</td>
+      <td>clear / rain / snow / fog<br>路面 dry / wet / snow・ice<br>昼・夜</td>
+      <td><span class="tbd">（要確認）</span></td>
+    </tr>
+    <tr>
+      <td class="rowhead">走行環境</td>
+      <td>市街地中心・高交通密度</td>
+      <td>高速道路のみ</td>
+      <td>市街地・郊外・高速</td>
+      <td>市街地・地方道・高速</td>
+      <td>highway / urban / residential / rural<br>トンネル・橋・環状交差点・踏切・料金所・勾配</td>
+      <td>一般道（ページ記載は city and freeway driving）</td>
+    </tr>
+    <tr>
+      <td class="rowhead">総走行時間</td>
+      <td>約5.5時間（1000×20秒）</td>
+      <td>33時間超</td>
+      <td class="tbd">Sequences 約8時間相当＋Drives<span class="tbd">（要確認）</span></td>
+      <td class="tbd">（要確認）</td>
+      <td>1700時間</td>
+      <td>約1時間</td>
+    </tr>
+    <tr>
+      <td class="rowhead">規模</td>
+      <td>1000シーン<br>140万カメラ画像<br>39万LiDARスイープ</td>
+      <td>2019セグメント<br>97.3 GB</td>
+      <td>Frames 10万<br>Sequences 1473本<br>Drives 29本</td>
+      <td>ラベル付 41,277フレーム<br>うち3D bbox 12,497フレーム<br>＋未ラベル連続シーケンス</td>
+      <td>306,152クリップ<br>133 TB</td>
+      <td>46列 × 約1Hz<br>単一トリップ</td>
+    </tr>
+    <tr>
+      <td class="rowhead">車両</td>
+      <td>Renault Zoe ×2台<br>（ボストン=左ハンドル / シンガポール=右ハンドル）</td>
+      <td>Honda Civic 2016 中心<br>Toyota RAV4 <span class="tbd">（要確認）</span></td>
+      <td class="tbd">非公開（要確認）</td>
+      <td>Audi Q7 e-tron</td>
+      <td>Hyperion 8 / 8.1 プラットフォーム<br>車種は非公開。vehicle_dimensions を提供</td>
+      <td>2021 Chrysler Pacifica<br>（前輪駆動）</td>
+    </tr>
+    <tr>
+      <td class="rowhead">パワートレイン<br>／回生協調</td>
+      <td class="warn">BEV・前輪駆動<br><strong>回生協調あり</strong></td>
+      <td class="ok">ICE（Civic）<br><strong>回生なし＝摩擦制動がクリーン</strong></td>
+      <td class="tbd">（要確認）</td>
+      <td class="warn">PHEV<br><strong>回生協調あり</strong></td>
+      <td class="tbd">（要確認）</td>
+      <td class="ok">ICEと推定（吸気負圧・O2電圧・MAFを収録）<br><strong>回生の混入なし</strong><span class="tbd">（要確認）</span></td>
+    </tr>
+    <tr>
+      <td class="rowhead">センサ構成</td>
+      <td>カメラ6 / LiDAR 1(32ch) / レーダ5 / GNSS+IMU</td>
+      <td>前方カメラ1 / 9軸IMU / GPS / <strong>温度計</strong> / 生GNSS測定値 / grey panda によるCAN取得</td>
+      <td>前方8MPカメラ / LiDAR 3(VLS128＋VLP-16×2) / レーダ / GNSS+IMU</td>
+      <td>カメラ6(Sekonix) / LiDAR 5(VLP-16)</td>
+      <td>カメラ7 / LiDAR 1(10Hz) / レーダ最大10</td>
+      <td>OBDLink MX+（Bluetooth、OBD-IIポート）<br>＋ スマートフォン内蔵の GPS / 加速度計 / ジャイロ / 磁気センサ</td>
+    </tr>
+    <tr>
+      <td class="rowhead">アノテーション</td>
+      <td>3D bbox 23クラス・140万件 @2Hz<br>lidarseg 等の拡張あり</td>
+      <td class="ng">なし</td>
+      <td>3D物体（245mまで）/ 道路標識 / 車線 / 自由空間 / ego road</td>
+      <td>セマンティックセグメンテーション / インスタンス / 3D bbox</td>
+      <td>機械生成の obstacle ラベル<br><strong>CoC推論ラベル（VLA評価用）</strong> Train 1450 / Val 290クリップ</td>
+      <td class="ng">なし</td>
+    </tr>
+    <tr>
+      <td class="rowhead">地図データ</td>
+      <td>HDマップあり（セマンティックレイヤ11種）</td>
+      <td>なし</td>
+      <td class="tbd">（要確認）</td>
+      <td>なし</td>
+      <td>なし（XODR未提供、CARLA非互換）</td>
+      <td>なし（緯度経度・標高のみ）</td>
+    </tr>
+    <tr>
+      <td class="rowhead">ライセンス</td>
+      <td class="ng">CC BY-NC-SA 4.0</td>
+      <td class="ok">MIT</td>
+      <td class="ok">CC BY-SA 4.0</td>
+      <td class="warn">CC BY-ND 4.0</td>
+      <td class="warn">NVIDIA AV Dataset License</td>
+      <td class="tbd">明示なし（教材データ・要確認）</td>
+    </tr>
+    <tr>
+      <td class="rowhead">商用可否</td>
+      <td class="ng">不可<br>商用は Motional と個別契約<br>（nuScenes@motional.com）</td>
+      <td class="ok">可</td>
+      <td class="ok">可（継承条件あり）</td>
+      <td class="warn">可（改変版の再配布は不可）</td>
+      <td class="warn">可。ただしAV／ADAS用途に限定</td>
+      <td class="tbd">（要確認）</td>
+    </tr>
+    <tr>
+      <td class="rowhead">派生・再配布条件</td>
+      <td>ShareAlike（同一ライセンスでの継承）</td>
+      <td>制限なし（著作権表示のみ）</td>
+      <td>ShareAlike</td>
+      <td>NoDerivatives（改変版の配布不可）</td>
+      <td>派生物作成・再配布・ホスティング不可。機密保持義務あり。12ヶ月で失効</td>
+      <td class="tbd">（要確認）</td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- ============================================================ -->
+<h2>3. データ構造</h2>
+
+<p>信号一覧の表からは読み取れないが、用途適合性を左右する属性。<strong>クリップ長とクリップ間の連続性が、時系列を跨ぐ物理量（熱・摩耗・累積エネルギー）の扱いを決定する。</strong></p>
+
+<table>
+  <thead>
+    <tr>
+      <th style="width:13%">項目</th>
+      <th>nuScenes</th>
+      <th>comma2k19</th>
+      <th>ZOD</th>
+      <th>A2D2</th>
+      <th>NVIDIA PhysicalAI-AV</th>
+      <th>OBD-IIログ（参考・従来利用）</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td class="rowhead">1クリップ長</td>
+      <td>約20秒</td>
+      <td>1分</td>
+      <td>Frames: 単発<br>Sequences: 20秒<br>Drives: 数分</td>
+      <td>連続シーケンス<span class="tbd">（長さ要確認）</span></td>
+      <td>20秒</td>
+      <td>約1時間の単一連続トリップ</td>
+    </tr>
+    <tr>
+      <td class="rowhead">クリップ間の連続性</td>
+      <td class="ng">非連続。独立したクリップの集合</td>
+      <td class="ok">連続ドライブを1分単位に分割したもの</td>
+      <td class="warn">Sequences間は非連続。Drivesは内部が連続</td>
+      <td class="warn">ドライブ内は連続<span class="tbd">（要確認）</span></td>
+      <td class="ng">非連続。独立したクリップの集合</td>
+      <td class="ok">該当なし。<strong>トリップ全体が連続</strong></td>
+    </tr>
+    <tr>
+      <td class="rowhead">長尺への再構成</td>
+      <td class="ng">不可</td>
+      <td class="ok">可（数時間単位で連結可能）</td>
+      <td class="warn">Drives のみ数分単位で可</td>
+      <td class="warn">ドライブ単位で可<span class="tbd">（要確認）</span></td>
+      <td class="ng">不可</td>
+      <td class="ok">不要（元から連続）</td>
+    </tr>
+    <tr>
+      <td class="rowhead">主なサンプリングレート</td>
+      <td>IMU 100Hz / pose 50Hz / 舵角 100Hz / Zoe車両情報 100Hz / Zoeセンサ 約794–973Hz / 車両モニタ 2Hz</td>
+      <td>CAN 生フレーム（信号ごと。概ね50–100Hz）<span class="tbd">（要確認）</span><br>カメラ 20fps</td>
+      <td>車両制御信号 100Hz / IMU 50Hz / 測位 1Hz<span class="tbd">（資料により記述ゆれあり・要確認）</span></td>
+      <td class="tbd">（要確認）</td>
+      <td>カメラ 30fps / LiDAR 10Hz<br>egomotion のレート<span class="tbd">（要確認）</span></td>
+      <td class="warn">ログ行間隔 約1秒（一部2秒）。<strong>OBD由来チャンネルの実効更新レートは下記「欠損」を参照</strong></td>
+    </tr>
+    <tr>
+      <td class="rowhead">タイムスタンプの定義</td>
+      <td class="warn">多くは測定時刻。ただし<strong>Zoe Sensors と Zoe Vehicle Info は CAN受信時刻</strong></td>
+      <td>GPS時刻ベース</td>
+      <td class="tbd">（要確認）</td>
+      <td class="tbd">（要確認）</td>
+      <td>クリップ内でtimestamp 0を原点とするローカル座標系</td>
+      <td>トリップ開始からの経過秒</td>
+    </tr>
+    <tr>
+      <td class="rowhead">時刻同期の信頼性</td>
+      <td class="warn">公式に「highly experimental」「信号間で冗長・重複あり」と明記</td>
+      <td>INS/GNSS/Vision のタイトカップリング最適化により整合</td>
+      <td class="tbd">（要確認）</td>
+      <td>時刻同期・相互レジストレーション済みと記載</td>
+      <td class="tbd">（要確認）</td>
+      <td class="warn">OBD由来とデバイス由来で更新タイミングが異なる</td>
+    </tr>
+    <tr>
+      <td class="rowhead">欠損</td>
+      <td>CAN未提供のシーンあり。route は3%欠損</td>
+      <td class="tbd">（要確認）</td>
+      <td class="tbd">（要確認）</td>
+      <td class="tbd">（要確認）</td>
+      <td>LiDAR 298,326 / 306,152 クリップ<br>レーダ 160,761 / 306,152 クリップ</td>
+      <td class="ng">取得できた冒頭143行（t=0〜133秒）の範囲で、<strong>OBD由来の全チャンネルが初期値のまま変化しない</strong>。GPS Speed=0 の停車中も Vehicle speed=9.94 MPH を保持しており、前方補完またはポーリング欠損と推定<span class="tbd">（要確認）</span></td>
+    </tr>
+    <tr>
+      <td class="rowhead">自車位置の生成方法</td>
+      <td>LiDARベースのマップ測位</td>
+      <td>Laika（生GNSS処理）＋ INS/GNSS/Vision オプティマイザ</td>
+      <td>高精度GNSS/IMU</td>
+      <td>GPS</td>
+      <td>egomotion（オフライン最適化版 egomotion.offline も提供）</td>
+      <td>スマートフォンGPS（水平精度カラムあり。確認範囲で 15〜160 ft）</td>
+    </tr>
+    <tr>
+      <td class="rowhead">ファイル形式</td>
+      <td>JSON（CAN拡張）＋ 各センサ形式</td>
+      <td>numpy / HEVC。HuggingFaceでは parquet</td>
+      <td>HDF5（vehicle_data）＋ 各センサ形式</td>
+      <td>バス信号は JSON<span class="tbd">（要確認）</span></td>
+      <td>parquet（メタデータ・ラベル）/ mp4 / Draco圧縮点群</td>
+      <td>CSV（テキスト）</td>
+    </tr>
+    <tr>
+      <td class="rowhead">データ総容量</td>
+      <td>約350 GB（full）＋ CAN拡張は小容量</td>
+      <td>97.3 GB</td>
+      <td class="tbd">（要確認）</td>
+      <td>約2.3 TB<span class="tbd">（要確認）</span></td>
+      <td>133 TB（チャンク単位で部分DL可）</td>
+      <td>数MB</td>
+    </tr>
+    <tr>
+      <td class="rowhead">SDK / devkit</td>
+      <td>nuscenes-devkit (Python)</td>
+      <td>公式リポジトリのnotebook。CAN復号は opendbc</td>
+      <td>zenseact/zod (Python)</td>
+      <td>公式サンプル。ROS変換は a2d2_ros_preparer</td>
+      <td>physical_ai_av (Python, pip install可)</td>
+      <td>なし（Pandasで直接読み込み）</td>
+    </tr>
+    <tr>
+      <td class="rowhead">入手方法</td>
+      <td>公式サイト登録</td>
+      <td>HuggingFace / Academic Torrents</td>
+      <td>公式サイト</td>
+      <td>公式サイト / AWS Open Data</td>
+      <td>HuggingFace（アカウント作成＋ライセンス同意＋アクセストークンが必要）</td>
+      <td class="ok">直接ダウンロード（登録不要）</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="note">
+<p><strong>この章を独立させている理由：</strong>今回の評価でnuScenesが脱落した主因は信号の内容ではなく「20秒の独立クリップなので熱履歴が繋がらない」という構造上の性質だった。この属性は基本情報の表にも信号一覧の表にも書く場所がなく、章として独立させないと必ず見落とされる。</p>
+</div>
+
+<!-- ============================================================ -->
+<h2>4. CAN・車両信号のカバレッジ</h2>
+
+<p>行＝信号カテゴリ、列＝データセットで整理する。今回の評価で使わないカテゴリも含めて網羅する。</p>
+
+<table>
+  <thead>
+    <tr>
+      <th style="width:11%">カテゴリ</th>
+      <th>nuScenes</th>
+      <th>comma2k19</th>
+      <th>ZOD</th>
+      <th>A2D2</th>
+      <th>NVIDIA PhysicalAI-AV</th>
+      <th>OBD-IIログ（参考・従来利用）</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td class="rowhead">縦運動</td>
+      <td>pose.vel @50Hz<br>pose.accel @50Hz<br>longitudinal_accel @100Hz<br>odom_speed @100Hz<br>vehicle_speed @2Hz</td>
+      <td>車速・前後加速度<br>（opendbc復号）</td>
+      <td>縦速度・縦加速度 @100Hz</td>
+      <td>vehicle_speed<br>acceleration_x</td>
+      <td>egomotion に含まれる<span class="tbd">（要確認）</span></td>
+      <td>Vehicle speed (MPH)<br>GPS Speed (MPH)<br>Acceleration (ft/s²)<br>Accel X @約1Hz</td>
+    </tr>
+    <tr>
+      <td class="rowhead">横運動</td>
+      <td>transversal_accel @100Hz（0.004g分解能）<br>IMU rotation_rate @100Hz<br>yaw_rate @2Hz</td>
+      <td>KINEMATICS（ヨーレート・横G）<span class="tbd">（要確認）</span></td>
+      <td>横速度・横加速度 @100Hz<br>roll rate / pitch rate</td>
+      <td>angular_velocity_omega_x/y/z<br>acceleration_y</td>
+      <td>egomotion に含まれる<span class="tbd">（要確認）</span></td>
+      <td class="warn">Rotation Rate X/Y/Z (deg/s)<br>Accel Y @約1Hz<br><strong>デバイス搭載IMUのため車両座標系との整合が必要</strong></td>
+    </tr>
+    <tr>
+      <td class="rowhead">姿勢・<br>サスペンション</td>
+      <td class="ng">なし（IMUクォータニオンから間接推定のみ）</td>
+      <td class="ng">なし（9軸IMUから間接推定）</td>
+      <td class="ok"><strong>body height</strong><br><strong>body pitch</strong> @100Hz</td>
+      <td class="ok"><strong>pitch_angle</strong><br><strong>roll_angle</strong></td>
+      <td>attitude（pitch/roll、重力基準で推定）</td>
+      <td class="ok"><strong>Roll (deg)</strong><br><strong>Pitch (deg)</strong><br>（デバイス姿勢である点に注意）</td>
+    </tr>
+    <tr>
+      <td class="rowhead">車輪</td>
+      <td class="ok"><strong>FL/FR/RL/RR wheel_speed @100Hz</strong>（0.0417rpm分解能）<br>rear_left/right_rpm @2Hz<br>odom（周長剰余, cm）</td>
+      <td class="ok">WHEEL_SPEEDS 4輪<span class="tbd">（要確認）</span></td>
+      <td class="ng">4輪速なし</td>
+      <td class="ok"><strong>distance_pulse_front_left / front_right / rear_left / rear_right</strong></td>
+      <td class="tbd">（要確認）</td>
+      <td class="ng">4輪速なし</td>
+    </tr>
+    <tr>
+      <td class="rowhead">駆動系</td>
+      <td class="ok"><strong>meanEffTorque（実トルク, Nm）@100Hz</strong><br><strong>requestedTorqueAfterProc @100Hz</strong><br>pedal_cc（0–1000）<br>regen（0–100）<br>throttle @2Hz<br>throttle_sensor @約800Hz</td>
+      <td>GAS_PEDAL、エンジン回転数、ギア<span class="tbd">（要確認）</span></td>
+      <td>アクセルペダル位置 @100Hz</td>
+      <td>accelerator_pedal<br>accelerator_pedal_gradient_sign</td>
+      <td class="tbd">（要確認）</td>
+      <td>Engine Torque (lb·ft)<br>Engine Power (hp)<br>Absolute throttle position (%)<br>Engine RPM<br>Calculated load value (%)<br>Mass air flow rate / Boost</td>
+    </tr>
+    <tr>
+      <td class="rowhead">制動系</td>
+      <td class="warn">brake（制動圧, bar, 整数0–126）<strong>@2Hz のみ</strong><br>brake_switch @2Hz<br>brake_sensor（正規化値0.166–0.631）@約800Hz</td>
+      <td class="ok">ブレーキ圧・ブレーキモジュール<span class="tbd">（要確認）</span></td>
+      <td class="warn"><strong>brake pedal state</strong>（液圧ではなく状態値の可能性）<span class="tbd">（要確認）</span></td>
+      <td class="ok"><strong>brake_pressure</strong></td>
+      <td class="tbd">（要確認）</td>
+      <td class="ng"><strong>液圧・ペダルともになし</strong><br>Hard Brake Count（累積カウンタ）のみ</td>
+    </tr>
+    <tr>
+      <td class="rowhead">操舵系</td>
+      <td>steeranglefeedback（rad, −7.7〜6.3）@100Hz<br>steer_raw / steer_corrected / steer_offset_can @100Hz<br>steering（deg, 分解能0.1）@2Hz<br>steering_speed @2Hz<br>steering_sensor @約800Hz</td>
+      <td>STEER_ANGLE_SENSOR<span class="tbd">（要確認）</span></td>
+      <td class="ok">ステア角 / ステア角速度 / <strong>ステアリングホイールトルク</strong> @100Hz</td>
+      <td>steering_angle_calculated<br>steering_angle_calculated_sign</td>
+      <td class="tbd">（要確認）</td>
+      <td class="ng">なし</td>
+    </tr>
+    <tr>
+      <td class="rowhead">制御系フラグ<br>(ABS/TCS/ESC)</td>
+      <td class="ng">なし。gear_position @2Hz のみ</td>
+      <td class="warn">Honda VSA_STATUS / Toyota ESP_CONTROL に相当する信号<span class="tbd">（要確認）</span></td>
+      <td class="tbd">（要確認）</td>
+      <td class="tbd">（要確認）</td>
+      <td class="tbd">（要確認）</td>
+      <td class="ng">なし。MIL作動中走行距離のみ</td>
+    </tr>
+    <tr>
+      <td class="rowhead">ボディ系</td>
+      <td>left_signal / right_signal @2Hz<br>battery_level / available_distance @2Hz</td>
+      <td>生フレームに含まれる可能性あり<span class="tbd">（要確認）</span></td>
+      <td>ウィンカー状態</td>
+      <td class="ng">なし<span class="tbd">（要確認）</span></td>
+      <td class="tbd">（要確認）</td>
+      <td class="ng">なし</td>
+    </tr>
+    <tr>
+      <td class="rowhead">環境</td>
+      <td class="warn">left_solar / right_solar（日射センサ）@100Hz<br><strong>外気温なし</strong></td>
+      <td class="ok">EON搭載の<strong>温度計</strong>あり<span class="tbd">（外気温か機器温度かは要確認）</span></td>
+      <td class="ng">なし<span class="tbd">（要確認）</span></td>
+      <td class="ng">なし<span class="tbd">（要確認）</span></td>
+      <td>天候・路面状態のメタデータタグあり（信号値ではない）</td>
+      <td class="ok"><strong>Intake air temperature (°F)</strong>（外気温の代理）<br>Engine coolant temperature (°F)</td>
+    </tr>
+    <tr>
+      <td class="rowhead">測位</td>
+      <td>pose.pos（グローバル座標, m）@50Hz<br>route（走行予定経路）@約50Hz</td>
+      <td class="ok"><strong>生GNSS測定値</strong><br>Laika処理済みグローバル姿勢</td>
+      <td>緯度・経度・高度・方位・衛星数・速度 @1Hz</td>
+      <td>latitude / longitude_degree<br>latitude / longitude_direction</td>
+      <td>egomotion（クリップ内ローカル座標）</td>
+      <td class="ok">Latitude / Longitude<br><strong>Altitude (ft)</strong><br>Bearing / GPS Speed / Horz Accuracy</td>
+    </tr>
+    <tr>
+      <td class="rowhead">タイヤ関連<br>(TPMS等)</td>
+      <td class="ng">なし</td>
+      <td class="warn">生フレームに未復号IDが残存。自力解析の余地あり</td>
+      <td class="ng">なし</td>
+      <td class="ng">なし</td>
+      <td class="ng">なし<span class="tbd">（要確認）</span></td>
+      <td class="ng">なし</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>4.1 OBD-IIログ（従来利用データ）の全カラム</h3>
+
+<p>従来利用していた auto_iowa.txt（2021 Chrysler Pacifica、Des Moines→Pella、約1時間、46列）について、実ファイルのヘッダ行を確認した結果を記載する。他のデータセットと異なり信号定義がドキュメント化されていないため、全カラムをそのまま列挙する。</p>
+
+<table>
+  <thead>
+    <tr><th style="width:16%">分類</th><th style="width:10%">列数</th><th>カラム名（原文ママ）</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td class="rowhead">時刻・測位</td><td>7</td>
+      <td>Time (sec), Latitude (deg), Longitude (deg), Altitude (ft), Bearing (deg), GPS Speed (MPH), Horz Accuracy (ft)</td>
+    </tr>
+    <tr>
+      <td class="rowhead">デバイスIMU</td><td>11</td>
+      <td>Accel X / Y / Z (ft/s²), Accel (Grav) X / Y / Z (ft/s²), Rotation Rate X / Y / Z (deg/s), Roll (deg), Pitch (deg)</td>
+    </tr>
+    <tr>
+      <td class="rowhead">磁気</td><td>3</td>
+      <td>Magnetometer X / Y / Z (µT)</td>
+    </tr>
+    <tr>
+      <td class="rowhead">車両運動</td><td>2</td>
+      <td>Vehicle speed (MPH), Acceleration (ft/s²)</td>
+    </tr>
+    <tr>
+      <td class="rowhead">パワートレイン</td><td>10</td>
+      <td>Engine RPM, Engine Power (hp), Engine Torque (lb•ft), Absolute throttle position (%), Calculated load value (%), Mass air flow rate (lb/min), Intake manifold absolute pressure (inHg), Boost (psi), O2 voltage (Bank 1 Sensor 1) (V), O2 voltage (Bank 1 Sensor 2) (V)</td>
+    </tr>
+    <tr>
+      <td class="rowhead">温度</td><td>2</td>
+      <td>Engine coolant temperature (°F), Intake air temperature (°F)</td>
+    </tr>
+    <tr>
+      <td class="rowhead">燃費・トリップ</td><td>7</td>
+      <td>Instant fuel economy (MPG), Fuel rate (gal/hr), Trip Distance (miles), Trip Fuel (gal), Trip Duration (min), Distance traveled while MIL is activated (miles), Input voltage read by the scan tool (V)</td>
+    </tr>
+    <tr>
+      <td class="rowhead">運転挙動カウンタ</td><td>4</td>
+      <td class="warn">Hard Brake Count, Hard Accel Count, Idling Count, Seconds Idling (sec) — いずれも<strong>累積カウンタ</strong>であり時系列信号ではない</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="caution">
+<p><strong>収録されていない主要信号：</strong>ブレーキ液圧、ブレーキペダル位置、ステアリング舵角、4輪個別の車輪速、ABS/TCS/ESC作動フラグ、ヨーレート（車両座標系のもの）。いずれも標準OBD-II PIDに含まれないため、同じ計測系のままでは取得できない。</p>
+</div>
+
+<div class="caution">
+<p><strong>実効サンプリングレートに関する観察：</strong>ログ行間隔は約1秒（一部2秒）である。ただし取得できた冒頭143行（t=0〜133秒）の範囲では、OBD由来の全チャンネル（Vehicle speed、Engine RPM、throttle、coolant temp、intake air temp、MAF、Boost、Engine Torque、燃費系）が<strong>初期値のまま一切変化していない</strong>。同区間で GPS Speed は 0、緯度経度もほぼ静止しているにもかかわらず Vehicle speed が 9.94 MPH を保持しており、前方補完またはポーリング欠損と考えられる。一方、GPS・デバイスIMU由来のチャンネルは毎行更新されている。<strong>ファイル全体で同じ傾向かは未確認</strong>（取得できたのは冒頭部分のみ）。実際に使用する前に全区間での実効更新レートを検証すること。</p>
+</div>
+
+<div class="note">
+<p><strong>着目点：</strong>他のデータセットとの決定的な差は「チャンネル数の不足」であって、データとしての性質はむしろ優れている面がある。<strong>Pitch (deg) と Altitude (ft) による勾配補正、約1時間の完全連続な時系列、自車ゆえの車両質量の既知性、Intake air temperature による外気温の代替</strong>は、第2〜3章の公開データセットが軒並み欠いている条件である。詳細は第6.5節。</p>
+</div>
+
+<!-- ============================================================ -->
+<h2>5. 評価① スリップ制御への適性</h2>
+
+<h3>5.1 必要条件の定義</h3>
+
+<table>
+  <thead>
+    <tr><th style="width:8%">条件</th><th style="width:24%">内容</th><th>必要な信号・性質</th></tr>
+  </thead>
+  <tbody>
+    <tr><td class="rowhead">①</td><td>スリップ率の算出</td><td>4輪速（高レート）、駆動トルク、駆動輪と従動輪の区別。従動輪が基準速度になるため駆動方式の情報が必須</td></tr>
+    <tr><td class="rowhead">②</td><td>スリップ角の推定</td><td>ヨーレート、横加速度、舵角、縦速度</td></tr>
+    <tr><td class="rowhead">③</td><td>荷重移動の把握</td><td>前後・横加速度に加え、ピッチ角／ロール角または車高</td></tr>
+    <tr><td class="rowhead">④</td><td>μ飽和事象の存在</td><td>ABS/TCS/ESC作動フラグ、または低μ路（雪氷・湿潤）での走行そのもの</td></tr>
+    <tr><td class="rowhead">⑤</td><td>環境条件の多様性</td><td>天候・路面状態の分布。乾燥路のみのデータでは飽和領域が観測されない</td></tr>
+  </tbody>
+</table>
+
+<h3>5.2 評価</h3>
+
+<table>
+  <thead>
+    <tr>
+      <th style="width:16%">データセット</th>
+      <th>①スリップ率</th>
+      <th>②スリップ角</th>
+      <th>③荷重移動</th>
+      <th>④μ飽和事象</th>
+      <th>⑤環境多様性</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td class="rowhead">nuScenes</td>
+      <td class="ok">◎ 4輪速100Hz＋実駆動トルク100Hz。前輪駆動のため後輪が自由転動の基準速度になる</td>
+      <td class="ok">○ IMU 100Hz＋舵角100Hz</td>
+      <td class="warn">△ 姿勢角なし。加速度からの間接推定のみ</td>
+      <td class="ng">✗ 作動フラグなし。市街地低速で事象がほぼ存在しない</td>
+      <td class="warn">△ 晴天・雨。低μ路なし</td>
+    </tr>
+    <tr>
+      <td class="rowhead">comma2k19</td>
+      <td class="ok">○ opendbcで4輪速を復号</td>
+      <td class="ok">○ ヨーレート・横G・舵角</td>
+      <td class="ok">○ ブレーキ圧あり。姿勢角なし</td>
+      <td class="warn">△ 作動フラグは存在するが、高速巡航のため発火しない</td>
+      <td class="ng">✗ 高速道路・乾燥路のみ</td>
+    </tr>
+    <tr>
+      <td class="rowhead">ZOD</td>
+      <td class="ng">✗ <strong>4輪速がない</strong>ため駆動スリップ率を直接組めない</td>
+      <td class="ok">◎ <strong>ステアリングホイールトルク</strong>あり。セルフアライニングトルクの飽和から路面μを推定できる</td>
+      <td class="ok">◎ 車高・ボディピッチを100Hz</td>
+      <td class="ok">◎ <strong>北欧の冬季走行</strong>を含む</td>
+      <td class="ok">◎ 欧州14カ国・2年間</td>
+    </tr>
+    <tr>
+      <td class="rowhead">A2D2</td>
+      <td class="ok">○ distance_pulse 4輪分から車輪速を導出<span class="tbd">（レート要確認）</span></td>
+      <td class="ok">○ ω_z＋3軸加速度</td>
+      <td class="ok">◎ pitch_angle / roll_angle</td>
+      <td class="ng">✗ 良天候中心</td>
+      <td class="ng">✗ ドイツ3地域・良天候</td>
+    </tr>
+    <tr>
+      <td class="rowhead">NVIDIA<br>PhysicalAI-AV</td>
+      <td class="tbd">（要確認）</td>
+      <td class="tbd">（要確認）</td>
+      <td class="tbd">（要確認）</td>
+      <td class="ok">◎ <strong>snow / ice 路面を明示的に含む</strong>、25カ国1700時間</td>
+      <td class="ok">◎ clear / rain / snow / fog、昼夜、勾配</td>
+    </tr>
+      <tr>
+      <td class="rowhead">OBD-IIログ<br>（参考・従来利用）</td>
+      <td class="ng">✗ 4輪速がなく、車速も実効1Hz以下</td>
+      <td class="warn">△ ヨーレート・横Gはあるが、デバイスIMUのため座標系整合が必要。約1Hz</td>
+      <td class="ok">○ Roll / Pitch を直接収録。ただしデバイス姿勢</td>
+      <td class="ng">✗ 平坦地の一般道・単一トリップ</td>
+      <td class="ng">✗ 単一トリップのみ</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>5.3 所見</h3>
+
+<p><strong>信号が揃うものには事象がなく、事象があるものには信号がない、という構図になっている。</strong></p>
+
+<p>nuScenesはスリップ率の計算条件としては優秀である。前輪駆動のZoeで4輪速100Hzと実駆動トルク100Hzが揃っているため、従動輪を基準としたスリップ率が直接計算できる。しかし市街地低速・乾燥路のため、スリップ率のヒストグラムはほぼゼロ付近に潰れる。滑らないデータからは滑りを学習できない。A2D2も同様で、姿勢角があるぶん荷重移動の把握には優れるが、事象そのものがない。</p>
+
+<p>ZODは唯一、北欧の冬季走行という低μ事象を含む。加えてステアリングホイールトルクが入っており、セルフアライニングトルクの飽和から路面μを推定する手法が使える。これは他にない性質である。ただし4輪速がないため、駆動スリップ率を直接組むことはできない。</p>
+
+<p>comma2k19は生CANフレームがそのまま残るため、DBC未定義のIDを解析すれば追加信号を掘り出せる可能性がある。潜在的な信号網羅性は最も高いが、走行条件は最も穏やかである。</p>
+
+<p>NVIDIA PhysicalAI-AVは、雪氷路面を明示的に含む1700時間という規模の点で最有力候補になりうる。ただし公開されているディレクトリ構成上、車両制御信号に相当するものが確認できておらず、第8章の確認が前提となる。</p>
+
+<div class="note">
+<p><strong>推奨：</strong>単独で全条件を満たすものはない。ZOD（低μ事象・横力飽和）と nuScenes または A2D2（駆動スリップ率の同定）を役割分担させる構成が現実的。NVIDIA PhysicalAI-AVに車両制御信号が含まれることが確認できれば、単独での第一候補になる。</p>
+</div>
+
+<!-- ============================================================ -->
+<h2>6. 評価② ブレーキ熱モデル校正への適性</h2>
+
+<p>「同じ液圧をかけているのに減速度が落ちてきた」という観測から熱力学モデルを校正する用途。液圧という入力が直接計測されるため、タイヤ熱と異なり推定の推定にならない点で観測問題としては筋が良い。</p>
+
+<h3>6.1 必要条件の定義</h3>
+
+<table>
+  <thead>
+    <tr><th style="width:8%">条件</th><th style="width:24%">内容</th><th>要求水準</th></tr>
+  </thead>
+  <tbody>
+    <tr><td class="rowhead">①</td><td>液圧の高レート計測</td><td>制動1回が2〜4秒のため、最低20Hz、望ましくは50Hz以上</td></tr>
+    <tr><td class="rowhead">②</td><td>熱履歴の連続性</td><td>初期ローター温度が既知でなければ熱モデルは成立しない。観測区間の「前」が時系列として繋がっていることが必須</td></tr>
+    <tr><td class="rowhead">③</td><td>フェード事象の存在</td><td>ローターが300℃を超えるような入力。長い下り坂での連続制動、繰り返し急制動</td></tr>
+    <tr><td class="rowhead">④</td><td>回生の分離</td><td>回生ブレーキが混入すると液圧→減速度のゲインが汚染される。回生トルクを個別に観測できるか、そもそも回生がないこと</td></tr>
+    <tr><td class="rowhead">⑤</td><td>勾配補正の手段</td><td>ピッチ角または高精度標高。詳細は下記</td></tr>
+    <tr><td class="rowhead">⑥</td><td>車両質量の既知性</td><td>ゲインに直接効く。積載状態を含む</td></tr>
+    <tr><td class="rowhead">⑦</td><td>外気温</td><td>冷却項の境界条件</td></tr>
+  </tbody>
+</table>
+
+<div class="caution">
+<p><strong>条件⑤が盲点になりやすい。</strong>検出したい変化量は0.3g制動に対して数%〜十数%、すなわち0.03〜0.15 m/s²程度である。一方<strong>勾配1%が0.098 m/s²</strong>に相当し、完全に同オーダーとなる。勾配を補正しない限り、信号がノイズに埋没する。</p>
+</div>
+
+<h3>6.2 評価</h3>
+
+<table>
+  <thead>
+    <tr>
+      <th style="width:14%">データセット</th>
+      <th>①液圧レート</th>
+      <th>②熱履歴の連続性</th>
+      <th>③フェード事象</th>
+      <th>④回生の分離</th>
+      <th>⑤勾配補正</th>
+      <th>⑥質量</th>
+      <th>⑦外気温</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td class="rowhead">nuScenes</td>
+      <td class="ng">✗ <strong>2Hz</strong>。3秒の制動で6サンプル</td>
+      <td class="ng">✗ <strong>20秒の独立クリップ</strong>。初期温度が不明で累積入熱も積分できない</td>
+      <td class="ng">✗ 市街地低速</td>
+      <td class="warn">○ meanEffTorque の負値で回生分を差し引ける</td>
+      <td class="warn">△ IMUピッチ＋地図z</td>
+      <td class="ng">✗ 不明</td>
+      <td class="ng">✗ なし</td>
+    </tr>
+    <tr>
+      <td class="rowhead">comma2k19</td>
+      <td class="ok">○ 50–100Hz程度<span class="tbd">（要確認）</span></td>
+      <td class="ok">◎ 連続ドライブを再構成可能</td>
+      <td class="warn">△ 高速巡航。フェードは発生していない</td>
+      <td class="ok">◎ <strong>Civicは非ハイブリッドで純摩擦制動</strong></td>
+      <td class="warn">△ 生GNSSあり。姿勢角なし</td>
+      <td class="ng">✗ 不明</td>
+      <td class="warn">○ 温度計あり<span class="tbd">（要確認）</span></td>
+    </tr>
+    <tr>
+      <td class="rowhead">ZOD</td>
+      <td class="warn">△ 液圧でなくペダル状態の可能性<span class="tbd">（要確認）</span></td>
+      <td class="warn">△ Drives は数分</td>
+      <td class="ng">✗ 公道通常走行</td>
+      <td class="tbd">（車両不明・要確認）</td>
+      <td class="ok">◎ body pitch / 車高 100Hz</td>
+      <td class="ng">✗ 不明</td>
+      <td class="ng">✗ なし</td>
+    </tr>
+    <tr>
+      <td class="rowhead">A2D2</td>
+      <td class="ok">○ brake_pressure を明示的に提供</td>
+      <td class="warn">△ ドライブ内は連続<span class="tbd">（要確認）</span></td>
+      <td class="ng">✗ 公道通常走行</td>
+      <td class="ng">✗ <strong>Q7 e-tron（PHEV）で回生混入</strong>。回生トルクの個別信号が見当たらない</td>
+      <td class="ok">◎ pitch_angle / roll_angle</td>
+      <td class="ng">✗ 不明</td>
+      <td class="ng">✗ なし</td>
+    </tr>
+    <tr>
+      <td class="rowhead">NVIDIA<br>PhysicalAI-AV</td>
+      <td class="tbd">（要確認）</td>
+      <td class="ng">✗ 20秒の独立クリップ</td>
+      <td class="warn">△ 勾配タグあり。フェード水準かは不明</td>
+      <td class="tbd">（要確認）</td>
+      <td>attitude（重力基準のpitch）</td>
+      <td class="warn">△ vehicle_dimensions あり。質量は<span class="tbd">要確認</span></td>
+      <td class="ng">✗ 天候タグのみ</td>
+    </tr>
+      <tr>
+      <td class="rowhead">OBD-IIログ<br>（参考・従来利用）</td>
+      <td class="ng">✗ 液圧・ペダルともに収録なし</td>
+      <td class="ok">◎ <strong>約1時間の単一連続トリップ。全候補中で最良</strong></td>
+      <td class="ng">✗ 平坦地の一般道</td>
+      <td class="ok">○ ICEと推定され回生の混入なし<span class="tbd">（要確認）</span></td>
+      <td class="ok">◎ <strong>Pitch (deg) と Altitude (ft) を直接収録</strong></td>
+      <td class="ok">○ 自車のため既知にできる</td>
+      <td class="ok">○ Intake air temperature が代理になる</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>6.3 所見</h3>
+
+<p><strong>決定的なのは条件①ではなく②と③である。</strong></p>
+
+<p>nuScenesは液圧2Hzの時点で脱落するが、仮に100Hzであったとしても20秒クリップという構造が致命的である。シーン冒頭のローター温度を知る手段がなく、シーン間が不連続なため累積入熱も積分できない。熱モデルの校正という目的に対して、データ構造そのものが噛み合っていない。NVIDIA PhysicalAI-AVも同じ20秒クリップ構造のため、規模の大きさに関わらず同じ理由で不適である。</p>
+
+<p>条件③については、全データセットが公道の通常走行であり、長い下り坂での連続制動も繰り返し急制動も含まない。現代車のブレーキは公道の通常使用でフェードしないよう設計されているため、<strong>探している事象がそもそもデータに含まれていない</strong>可能性が非常に高い。信号が揃っていても、校正対象の現象が起きていなければ意味がない。</p>
+
+<p>回生も効く。nuScenes（Zoe, BEV）とA2D2（Q7 e-tron, PHEV）はいずれも回生協調ブレーキであり、液圧→減速度の素のゲインが取れない。nuScenesは meanEffTorque の負値で回生分を差し引ける余地があるが、A2D2には相当する信号が見当たらない。この点では comma2k19 の Honda Civic（非ハイブリッド）が最もクリーンである。</p>
+
+<h3>6.4 役割分担の提案</h3>
+
+<table>
+  <thead>
+    <tr><th style="width:24%">役割</th><th style="width:24%">データ源</th><th>内容</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>冷間ベースラインの構築</td>
+      <td>A2D2 / comma2k19</td>
+      <td>フェード検出には、正常時の液圧→減速度ゲイン g₀(v, p, 勾配) とその分散を知っている必要がある。数千回分の通常制動イベントからこのベースラインを速度域・液圧域ごとに推定するのは公開データが得意とする作業。A2D2は液圧・ピッチ角・4輪パルスが揃うため特に適する</td>
+    </tr>
+    <tr>
+      <td>穏やかな効き低下の観測</td>
+      <td>ZOD / nuScenes</td>
+      <td>公道でも観測しうる現象として、朝一回目の制動での効き低下（ローター表面の湿気・軽微な錆）、雨天時の初期制動の効き低下（水膜）、市街地の繰り返し制動で100〜200℃程度まで上昇した領域での緩やかなμ変化がある。フェードほど大きくないが、熱モデルの低温側の校正点にはなる</td>
+    </tr>
+    <tr>
+      <td class="ok">フェード領域の取得</td>
+      <td class="ok"><strong>自社取得</strong></td>
+      <td>必要チャンネルが少なく（液圧、車速、前後G、勾配、外気温）、事象を意図的に作れ（峠の連続下り、繰り返し制動）、質量が既知で、熱履歴を最初から記録できる。<strong>加えてローターに熱電対を仕込めば、モデル校正が「推定 vs 推定」ではなく「推定 vs 実測」になる。</strong>公開データでは実現不可能な点であり、費用対効果が極めて高い</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="note">
+<p><strong>結論：</strong>ブレーキ熱モデルの校正について、公開データセットはライセンスの可否に関わらず適さない。従来のOBD-IIログの延長線上で、液圧・車速・IMU・外気温・ローター温度を自前で取得する方が、目的にも法務にも素直である。公開データは冷間ベースラインの構築に限定して用いる。</p>
+</div>
+
+<h3>6.5 従来のOBD-IIログとの関係</h3>
+
+<p>第6.2節の評価テーブルを縦に読むと、<strong>OBD-IIログと公開データセット群は、欠けているものがちょうど反転している</strong>ことがわかる。</p>
+
+<table>
+  <thead>
+    <tr><th style="width:26%">条件</th><th style="width:30%">公開データセット群</th><th>OBD-IIログ（従来利用）</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>①液圧の高レート計測</td><td class="ok">A2D2・comma2k19 は取得可</td><td class="ng">収録なし</td></tr>
+    <tr><td>②熱履歴の連続性</td><td class="ng">20秒クリップ構造のものが多く、最良の comma2k19 でも分割ログの再構成が必要</td><td class="ok">約1時間の完全連続</td></tr>
+    <tr><td>③フェード事象</td><td class="ng">なし</td><td class="ng">なし</td></tr>
+    <tr><td>④回生の分離</td><td class="warn">nuScenes・A2D2 は回生混入</td><td class="ok">ICEと推定され混入なし</td></tr>
+    <tr><td>⑤勾配補正</td><td class="warn">姿勢角を持つのは ZOD・A2D2 のみ</td><td class="ok">Pitch (deg) と Altitude (ft) を直接収録</td></tr>
+    <tr><td>⑥車両質量</td><td class="ng">全件不明</td><td class="ok">自車のため既知にできる</td></tr>
+    <tr><td>⑦外気温</td><td class="ng">ほぼ全件なし</td><td class="ok">Intake air temperature が代理になる</td></tr>
+  </tbody>
+</table>
+
+<p>公開データセットに欠けているのは条件②④⑤⑥⑦、すなわち<strong>データの素性に関する情報</strong>である。これらは第三者が収集したデータである以上、原理的に埋めにくい。一方でOBD-IIログに欠けているのは条件①、すなわち<strong>計測チャンネル</strong>であり、これは計測系を拡張すれば埋まる。</p>
+
+<div class="note">
+<p><strong>示唆：</strong>ブレーキ熱モデルの校正に関しては、公開データセットを探索するよりも、<strong>従来のOBD-II計測系にブレーキ液圧・舵角・4輪速を追加し、サンプリングレートを50Hz以上に引き上げる</strong>方が目的に近い。標準OBD-II PIDでは液圧が取れないため、CANバスへの直接アクセス（CANロガー）またはブレーキラインへの圧力センサ後付けが必要になる。この拡張を行った時点で、第6.2節の7条件のうち③以外がすべて満たされる。残る③はテストコースまたは峠での連続下り走行で作り出す。</p>
+</div>
+
+<!-- ============================================================ -->
+<h2>7. ライセンス詳細</h2>
+
+<h3>7.1 各条項が自社成果物に及ぼす影響</h3>
+
+<table>
+  <thead>
+    <tr><th style="width:18%">条項</th><th style="width:16%">該当</th><th>成果物への波及</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td class="rowhead">NonCommercial (NC)</td>
+      <td>nuScenes</td>
+      <td class="ng">データの再配布だけでなく<strong>利用目的そのものを制限</strong>する。成果物にデータ由来のバイトが一切残らなくても、同定した物理パラメータを商用製品の学習データ生成に用いる流れは「非商用データの商用目的利用」に該当しうる。R&D段階だから問題ないとは言い切れない</td>
+    </tr>
+    <tr>
+      <td class="rowhead">ShareAlike (SA)</td>
+      <td>nuScenes / ZOD</td>
+      <td class="warn">派生物を同一ライセンスで公開する義務。<strong>学習済みモデル、生成した合成データ、同定した物理パラメータが「派生物」に当たるかが論点</strong>。当たると解釈された場合、成果物の公開義務が生じる</td>
+    </tr>
+    <tr>
+      <td class="rowhead">NoDerivatives (ND)</td>
+      <td>A2D2</td>
+      <td class="warn">商用利用は可能だが、<strong>改変版の配布ができない</strong>。社内利用や、データ自体を配布しない成果物であれば影響は限定的だが、前処理済みデータを外部と共有する運用はできない</td>
+    </tr>
+    <tr>
+      <td class="rowhead">用途限定</td>
+      <td>NVIDIA</td>
+      <td class="warn">「<strong>NVIDIA technology を用いた</strong>」自動運転・ADASの<strong>内部開発</strong>に限定（第1条）。それ以外の目的への使用は不可（第4.3条）</td>
+    </tr>
+    <tr>
+      <td class="rowhead">機密保持</td>
+      <td>NVIDIA</td>
+      <td class="ng">データセット、その<strong>出力、およびベンチマーク・競合分析・性能データが Confidential Information</strong> と定義される（第3条）。<strong>本ページのような社内資料の取り扱いや、評価結果の対外公表に制約がかかる</strong></td>
+    </tr>
+    <tr>
+      <td class="rowhead">派生物の禁止</td>
+      <td>NVIDIA</td>
+      <td class="warn">データセットの派生物作成・販売・再配布・ホスティングを禁止（第4.6条）。学習済みモデルがここでいう派生物に該当するかは要法務確認</td>
+    </tr>
+    <tr>
+      <td class="rowhead">期限</td>
+      <td>NVIDIA</td>
+      <td class="ng"><strong>初回ダウンロードから12ヶ月で契約が失効</strong>し、失効後は使用停止と全コピーの破棄が必要（第8条）。長期プロジェクトでの利用計画に影響する</td>
+    </tr>
+    <tr>
+      <td class="rowhead">その他の制限</td>
+      <td>NVIDIA</td>
+      <td>監視目的・法執行支援の禁止（第4.1条）、個人の再識別・プロファイリングの禁止（第4.4条）、生体情報処理・属性推定の禁止（第4.5条）</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="caution">
+<p>本章はライセンス原文の読解に基づく整理であり、法的助言ではない。実際の採否判断にあたっては法務部門の確認を必ず経ること。特にShareAlikeの継承範囲と、NVIDIAライセンスにおける「派生物」「機密情報」の解釈は、成果物の扱いを大きく左右する。</p>
+</div>
+
+<h3>7.2 商用利用の可否まとめ</h3>
+
+<table>
+  <thead>
+    <tr><th style="width:18%">データセット</th><th style="width:14%">商用可否</th><th>条件・注意点</th></tr>
+  </thead>
+  <tbody>
+    <tr><td class="rowhead">nuScenes</td><td class="ng">不可</td><td>商用利用には Motional との個別契約が必要（nuScenes@motional.com）。条件は非公開で交渉次第</td></tr>
+    <tr><td class="rowhead">comma2k19</td><td class="ok">可</td><td>MIT。著作権表示の保持のみ。最も制約が緩い</td></tr>
+    <tr><td class="rowhead">ZOD</td><td class="ok">可</td><td>CC BY-SA 4.0。帰属表示＋ShareAlikeの継承</td></tr>
+    <tr><td class="rowhead">A2D2</td><td class="warn">可</td><td>CC BY-ND 4.0。帰属表示＋改変版の配布不可</td></tr>
+    <tr><td class="rowhead">NVIDIA PhysicalAI-AV</td><td class="warn">可</td><td>AV／ADAS用途かつNVIDIA技術の使用が前提。機密保持義務、派生物禁止、12ヶ月の期限あり</td></tr>
+  </tbody>
+</table>
+
+<!-- ============================================================ -->
+<h2>8. 未確認事項</h2>
+
+<table>
+  <thead>
+    <tr><th style="width:5%">#</th><th style="width:14%">対象</th><th style="width:12%">状態</th><th>内容</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>1</td><td>NVIDIA</td><td class="ng">未確認</td><td><strong>最優先。</strong>公開ディレクトリ構成には labels/egomotion しか見当たらず、CAN信号に相当するものが確認できない。一方でNVIDIAの技術ブログにはテレメトリにCANバス信号が含まれる旨の記述がある。公開データでの提供有無を、ライセンス同意後に physical_ai_av の wiki およびスキーマ定義で確認する</td></tr>
+    <tr><td>2</td><td>ZOD</td><td class="ng">未確認</td><td>vehicle_data.hdf5 の「brake pedal state」が液圧か、ペダル位置か、オンオフ状態か。ブレーキ評価の可否を直接左右する</td></tr>
+    <tr><td>3</td><td>ZOD</td><td class="ng">未確認</td><td>4輪速に相当する信号が本当に存在しないか。SDKのスキーマ定義で確認する</td></tr>
+    <tr><td>4</td><td>ZOD</td><td class="ng">未確認</td><td>収録車両の車種・パワートレイン・回生協調の有無</td></tr>
+    <tr><td>5</td><td>ZOD</td><td class="ng">未確認</td><td>サンプリングレートの記述ゆれ。「制御信号100Hz / IMU 50Hz / 測位1Hz」と「GNSS/IMU 100Hz」の両方の記述が存在する</td></tr>
+    <tr><td>6</td><td>A2D2</td><td class="ng">未確認</td><td>distance_pulse および brake_pressure のサンプリングレートと分解能</td></tr>
+    <tr><td>7</td><td>A2D2</td><td class="ng">未確認</td><td>回生トルクに相当する信号の有無。なければブレーキ評価では使えない</td></tr>
+    <tr><td>8</td><td>A2D2</td><td class="ng">未確認</td><td>連続シーケンスの長さと総走行時間</td></tr>
+    <tr><td>9</td><td>comma2k19</td><td class="ng">未確認</td><td>収録車種の内訳（Honda Civic / Toyota RAV4 の比率）と、各車のopendbc DBCで復号可能な信号一覧・レート</td></tr>
+    <tr><td>10</td><td>comma2k19</td><td class="ng">未確認</td><td>EON搭載の温度計が外気温か機器内部温度か</td></tr>
+    <tr><td>11</td><td>comma2k19</td><td class="ng">未確認</td><td>DBC未定義のCAN IDにTPMS等の有用な信号が含まれるか（自力解析の要否判断）</td></tr>
+    <tr><td>12</td><td>nuScenes</td><td class="ng">未確認</td><td>CANデータが提供されないシーンの具体的な件数と一覧</td></tr>
+    <tr><td>13</td><td>法務</td><td class="ng">未確認</td><td>ZODのShareAlikeが、同定した物理パラメータおよび学習済みモデルに及ぶかの解釈</td></tr>
+    <tr><td>14</td><td>法務</td><td class="ng">未確認</td><td>NVIDIAライセンス第3条の機密保持義務が、本ページのような社内資料の取り扱いにどう適用されるか</td></tr>
+    <tr><td>15</td><td>法務</td><td class="ng">未確認</td><td>NVIDIAライセンス第1条の「NVIDIA technology を用いた開発」の解釈範囲</td></tr>
+    <tr><td>16</td><td>OBD-IIログ</td><td class="ng">未確認</td><td>ライセンス表記。BYUの教材ページに掲載されたデータであり、明示的な利用条件が見当たらない</td></tr>
+    <tr><td>17</td><td>OBD-IIログ</td><td class="ng">未確認</td><td><strong>優先度高。</strong>OBD由来チャンネルの実効更新レート。冒頭143行では全く更新されていないが、ファイル全体で同じ傾向かを検証する（Pandasで各列の変化点間隔を集計すれば判定可能）</td></tr>
+    <tr><td>18</td><td>OBD-IIログ</td><td class="ng">未確認</td><td>2021 Chrysler Pacifica のパワートレイン。Boost が負圧域（−8.4 psi）を示し O2電圧・MAFを収録していることから自然吸気ICEと推定したが、Pacifica にはPHEV版も存在するため確定させる</td></tr>
+    <tr><td>19</td><td>OBD-IIログ</td><td class="ng">未確認</td><td>デバイスIMU（Accel / Rotation Rate / Roll / Pitch）の取り付け姿勢と車両座標系への変換方法。Roll / Pitch をそのまま路面勾配として使えるかの判断に必要</td></tr>
+    <tr><td>20</td><td>計測系拡張</td><td class="ng">未確認</td><td>使用中のOBDLink MX+ で生CANフレームの取得が可能か。可能であれば標準PID以外の車両信号にアクセスできる</td></tr>
+  </tbody>
+</table>
+
+<!-- ============================================================ -->
+<h2>9. 出典・更新履歴</h2>
+
+<h3>9.1 出典</h3>
+
+<table>
+  <thead>
+    <tr><th style="width:20%">対象</th><th>URL</th><th style="width:12%">確認日</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>nuScenes CAN bus expansion</td><td>https://github.com/nutonomy/nuscenes-devkit/blob/master/python-sdk/nuscenes/can_bus/README.md</td><td>2026-08-10</td></tr>
+    <tr><td>nuScenes 論文</td><td>https://arxiv.org/abs/1903.11027</td><td>2026-08-10</td></tr>
+    <tr><td>nuScenes 公式</td><td>https://www.nuscenes.org/</td><td>2026-08-10</td></tr>
+    <tr><td>comma2k19 (HuggingFace)</td><td>https://huggingface.co/datasets/commaai/comma2k19</td><td>2026-08-10</td></tr>
+    <tr><td>comma2k19 論文</td><td>https://arxiv.org/abs/1812.05752</td><td>2026-08-10</td></tr>
+    <tr><td>ZOD 公式</td><td>https://zod.zenseact.com/</td><td>2026-08-10</td></tr>
+    <tr><td>ZOD ライセンス</td><td>https://zod.zenseact.com/license/</td><td>2026-08-10</td></tr>
+    <tr><td>ZOD 論文 (ICCV 2023)</td><td>https://openaccess.thecvf.com/content/ICCV2023/papers/Alibeigi_Zenseact_Open_Dataset_A_Large-Scale_and_Diverse_Multimodal_Dataset_for_ICCV_2023_paper.pdf</td><td>2026-08-10</td></tr>
+    <tr><td>ZOD SDK</td><td>https://github.com/zenseact/zod</td><td>2026-08-10</td></tr>
+    <tr><td>A2D2 公式</td><td>https://www.a2d2.audi/</td><td>2026-08-10</td></tr>
+    <tr><td>A2D2 論文</td><td>https://arxiv.org/abs/2004.06320</td><td>2026-08-10</td></tr>
+    <tr><td>A2D2 センサ構成</td><td>https://a2d2-ros-preparer.readthedocs.io/en/latest/a2d2.html</td><td>2026-08-10</td></tr>
+    <tr><td>NVIDIA PhysicalAI-AV</td><td>https://huggingface.co/datasets/nvidia/PhysicalAI-Autonomous-Vehicles</td><td>2026-08-10</td></tr>
+    <tr><td>NVIDIA AV Dataset License</td><td>https://huggingface.co/datasets/nvidia/PhysicalAI-Autonomous-Vehicles/blob/main/LICENSE.pdf</td><td>2026-08-10</td></tr>
+    <tr><td>NVIDIA physical_ai_av SDK</td><td>https://github.com/NVlabs/physical_ai_av</td><td>2026-08-10</td></tr>
+    <tr><td>OBD-IIログ 解説ページ</td><td>https://apmonitor.com/che263/index.php/Main/PythonAuto</td><td>2026-08-10</td></tr>
+    <tr><td>OBD-IIログ 実データ<br>（2021 Chrysler, 約1時間, 46列）</td><td>https://apmonitor.com/pds/uploads/Main/auto_iowa.txt</td><td>2026-08-10<br>ヘッダ行および冒頭143行を直接確認</td></tr>
+    <tr><td>OBD-IIログ 実データ<br>（2014 Ford, 約8時間, 40列）</td><td>https://apmonitor.com/pds/uploads/Main/auto_trip.zip<br>※本ページでは未検証</td><td>—</td></tr>
+  </tbody>
+</table>
+
+<h3>9.2 更新履歴</h3>
+
+<table>
+  <thead>
+    <tr><th style="width:14%">日付</th><th style="width:14%">担当</th><th>内容</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>2026-08-10</td><td>—</td><td>初版作成。公開データセット5件。評価観点はスリップ制御とブレーキ熱モデル校正の2件</td></tr>
+    <tr><td>2026-08-10</td><td>—</td><td>従来利用していたOBD-IIログ（auto_iowa.txt）を正式な比較対象として追加。第2〜4章に列を、第5〜6章に行を追加。実ファイルのヘッダを確認して全46カラムを第4.1節に記載。第6.5節を新設</td></tr>
+  </tbody>
+</table>
+
+<div class="note">
+<p><strong>本ページの拡張方法：</strong>新しい評価観点を追加する場合は、第5章・第6章と同じ「必要条件の定義 → 評価テーブル → 所見」の3点セットで第10章以降に追記する。第2〜4章は評価目的に依存しないため、原則としてそのまま再利用できる。新しいデータセットを追加する場合は、第2〜4章の各テーブルに列を追加し、第5章以降の評価テーブルに行を追加する。</p>
+</div>
+
+</body>
+</html>
