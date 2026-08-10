@@ -1,0 +1,26 @@
+<h1>Confluence Import Test</h1>
+
+<p>This is a simple test page created in Confluence Storage Format.</p>
+
+<h2>Test Section</h2>
+
+<ul>
+  <li>Item 1</li>
+  <li>Item 2</li>
+  <li>Item 3</li>
+</ul>
+
+<h2>Test Table</h2>
+
+<table>
+  <tbody>
+    <tr>
+      <th>Column A</th>
+      <th>Column B</th>
+    </tr>
+    <tr>
+      <td>Value 1</td>
+      <td>Value 2</td>
+    </tr>
+  </tbody>
+</table>
