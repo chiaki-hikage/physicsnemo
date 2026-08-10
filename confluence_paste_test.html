@@ -1,35 +1,149 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
-  <meta charset="UTF-8">
-  <title>Confluence Paste Test</title>
+<meta charset="UTF-8">
+<title>Confluence貼り付けテスト</title>
+<style>
+  body { font-family: -apple-system, "Hiragino Kaku Gothic ProN", "Yu Gothic", sans-serif; line-height: 1.7; max-width: 900px; margin: 24px auto; padding: 0 16px; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; }
+  th, td { border: 1px solid #dfe1e6; padding: 8px 10px; text-align: left; vertical-align: top; font-size: 14px; }
+  th { background-color: #f4f5f7; font-weight: 600; }
+  code { background-color: #f4f5f7; padding: 1px 4px; border-radius: 3px; font-family: monospace; font-size: 90%; }
+  pre { background-color: #f4f5f7; padding: 10px; border-radius: 3px; overflow-x: auto; }
+  blockquote { border-left: 3px solid #4c9aff; background-color: #deebff; margin: 12px 0; padding: 8px 14px; }
+  .ok { background-color: #e3fcef; }
+  .ng { background-color: #ffebe6; }
+</style>
 </head>
 <body>
-  <h1>Confluence Paste Test</h1>
 
-  <p>This is a simple test page.</p>
+<h1>Confluence貼り付けテスト</h1>
 
-  <h2>Test Section</h2>
-  <ul>
-    <li>Item 1</li>
-    <li>Item 2</li>
-    <li>Item 3</li>
-  </ul>
+<p>このファイルは、HTML出力がConfluenceエディタに正しく変換されるかを確認するための<strong>テスト用の短いサンプル</strong>です。本番ページで使う予定の要素だけを一通り並べてあります。</p>
 
-  <h2>Test Table</h2>
-  <table border="1" cellpadding="6" cellspacing="0">
-    <thead>
-      <tr>
-        <th>Column A</th>
-        <th>Column B</th>
-      </tr>
-    </thead>
-    <tbody>
-      <tr>
-        <td>Value 1</td>
-        <td>Value 2</td>
-      </tr>
-    </tbody>
-  </table>
+<h2>1. 見出しと本文</h2>
+
+<h3>1.1 第3レベル見出し</h3>
+
+<p>通常の段落テキスト。<strong>太字</strong>、<em>斜体</em>、インラインコード <code>vehicle_monitor.brake</code>、および<a href="https://github.com/nutonomy/nuscenes-devkit">外部リンク</a>を含みます。</p>
+
+<blockquote>
+<p><strong>注意:</strong> 引用ブロックです。Confluenceでは情報パネル(info macro)に手動変換する想定の箇所に使います。</p>
+</blockquote>
+
+<h2>2. 比較テーブル（1データセット=1行）</h2>
+
+<table>
+  <thead>
+    <tr>
+      <th>データセット</th>
+      <th>車両</th>
+      <th>パワートレイン</th>
+      <th>1クリップ長</th>
+      <th>ライセンス</th>
+      <th>商用可否</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>nuScenes</td>
+      <td>Renault Zoe</td>
+      <td>BEV（回生協調あり）</td>
+      <td>約20秒（クリップ間 非連続）</td>
+      <td>CC BY-NC-SA 4.0</td>
+      <td class="ng">不可</td>
+    </tr>
+    <tr>
+      <td>comma2k19</td>
+      <td>Honda Civic / Toyota RAV4</td>
+      <td>ICE / HV</td>
+      <td>1分（連続セグメント、連結可）</td>
+      <td>MIT</td>
+      <td class="ok">可</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>3. カバレッジテーブル（行=信号カテゴリ、列=データセット）</h2>
+
+<table>
+  <thead>
+    <tr>
+      <th>信号カテゴリ</th>
+      <th>nuScenes</th>
+      <th>comma2k19</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>制動系</td>
+      <td><code>vehicle_monitor.brake</code> (bar) @2Hz<br><code>zoesensors.brake_sensor</code> (正規化) @約800Hz</td>
+      <td>ブレーキ圧 @50–100Hz <em>(要確認)</em></td>
+    </tr>
+    <tr>
+      <td>車輪</td>
+      <td><code>zoe_veh_info</code> 4輪速 @100Hz</td>
+      <td><code>WHEEL_SPEEDS</code> 4輪 <em>(要確認)</em></td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>4. 評価テーブル（記号の表示確認）</h2>
+
+<table>
+  <thead>
+    <tr><th>データセット</th><th>液圧レート</th><th>熱履歴の連続性</th><th>回生の分離</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>nuScenes</td><td>✗</td><td>✗</td><td>○</td></tr>
+    <tr><td>comma2k19</td><td>○</td><td>◎</td><td>◎</td></tr>
+    <tr><td>A2D2</td><td>○</td><td>△</td><td>✗</td></tr>
+  </tbody>
+</table>
+
+<h2>5. リストとコードブロック</h2>
+
+<ol>
+  <li>番号付きリストの項目
+    <ul>
+      <li>入れ子の箇条書き</li>
+      <li>2つ目の入れ子</li>
+    </ul>
+  </li>
+  <li>2つ目の項目</li>
+</ol>
+
+<p>未確認事項リスト（Confluenceのタスクリストに変換されるか要確認）:</p>
+<ul>
+  <li>[ ] ZODのブレーキ信号が液圧か状態フラグか</li>
+  <li>[ ] A2D2の <code>distance_pulse</code> のサンプリングレート</li>
+</ul>
+
+<pre><code>slip_ratio = (v_wheel - v_ref) / max(v_wheel, v_ref)
+</code></pre>
+
+<h2>6. 貼り付け後に確認していただきたい点</h2>
+
+<table>
+  <thead>
+    <tr><th>#</th><th>確認項目</th><th>結果</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>1</td><td>表がConfluenceのネイティブテーブルになっているか（画像や整形済みテキストになっていないか）</td><td></td></tr>
+    <tr><td>2</td><td>ヘッダ行がヘッダとして認識されているか</td><td></td></tr>
+    <tr><td>3</td><td>セルの背景色（可=緑 / 不可=赤）が残るか</td><td></td></tr>
+    <tr><td>4</td><td>セル内の改行（&lt;br&gt;）が保持されるか</td><td></td></tr>
+    <tr><td>5</td><td>◎ ○ △ ✗ の記号が文字化けしないか</td><td></td></tr>
+    <tr><td>6</td><td>日本語が文字化けしないか</td><td></td></tr>
+    <tr><td>7</td><td>インラインコードとコードブロックの体裁が残るか</td><td></td></tr>
+    <tr><td>8</td><td>入れ子リストの階層が保持されるか</td><td></td></tr>
+    <tr><td>9</td><td>[ ] がタスクリストのチェックボックスになるか</td><td></td></tr>
+    <tr><td>10</td><td>引用ブロックの体裁が残るか</td><td></td></tr>
+  </tbody>
+</table>
+
+<hr>
+<p style="font-size:13px;color:#6b778c;">貼り付け手順: このファイルをブラウザで開き、ページ全体を選択(Cmd+A)してコピー(Cmd+C)し、Confluenceの編集画面にそのまま貼り付けてください。HTMLソースをテキストとして貼り付けると変換されません。</p>
+
 </body>
 </html>
